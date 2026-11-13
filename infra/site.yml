@@ -38,9 +38,16 @@ Parameters:
   GitHubOidcProviderArn:
     Type: String
     Description: The existing IAM OIDC provider for token.actions.githubusercontent.com.
-  GitHubRepo:
+  GitHubSubjectPrefix:
     Type: String
-    Default: nemac/convectivity-helpers-viewer
+    Default: repo:nemac@2030676/convectivity-helpers-viewer@1456915969
+    Description: >
+      How GitHub names this repository when a workflow signs in to AWS. This
+      repository uses GitHub's immutable form, which carries the organisation
+      and repository id numbers after each name, so the plain
+      "repo:nemac/convectivity-helpers-viewer" does not match. Read the
+      current value with:
+      gh api repos/nemac/convectivity-helpers-viewer/actions/oidc/customization/sub
   GitHubBranch:
     Type: String
     Default: master
@@ -184,8 +191,8 @@ Resources:
         DNSName: !GetAtt Distribution.DomainName
         HostedZoneId: Z2FDTNDATAQYW2
 
-  # What the GitHub workflow signs in as. Only a run on GitHubBranch of
-  # GitHubRepo can assume it, and it holds no long-lived keys.
+  # What the GitHub workflow signs in as. Only a run on GitHubBranch of this
+  # repository can assume it, and it holds no long-lived keys.
   DeployRole:
     Type: AWS::IAM::Role
     Properties:
@@ -200,7 +207,7 @@ Resources:
             Condition:
               StringEquals:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
-                token.actions.githubusercontent.com:sub: !Sub "repo:${GitHubRepo}:ref:refs/heads/${GitHubBranch}"
+                token.actions.githubusercontent.com:sub: !Sub "${GitHubSubjectPrefix}:ref:refs/heads/${GitHubBranch}"
       Policies:
         - PolicyName: deploy-site
           PolicyDocument:
