@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import maplibregl, { Map, MapMouseEvent } from "maplibre-gl";
 import { Protocol } from "pmtiles";
 import {
-  BASEMAPS, BasemapKey, PINCH_MAX_DETOUR_M, PINCH_NO_ALTERNATIVE_M, STYLES,
+  BASEMAPS, BasemapKey, Bounds, PINCH_MAX_DETOUR_M, PINCH_NO_ALTERNATIVE_M, STYLES,
   Score, humanMiles, humanNumber, humanSeconds, percentileOf,
   rankSentence, roadTypeLabel, splitNames,
 } from "./config";
@@ -118,11 +118,32 @@ interface Props {
   flyKey: string;               // changes when the view should move
   countyKey: string;            // which percentile table the popup consults
   onEmptyChange?: (empty: boolean) => void;   // true when the view holds no roads
+  fullBounds: Bounds;           // what the "show it all" button zooms out to
+  fullLabel: string;            // that button's tooltip
+  focus?: Focus | null;         // a road to go to and open, for the guided examples
+  onFocusFeature?: (key: string, props: Record<string, any> | null) => void;
+  onInteract?: () => void;      // the reader has hovered or clicked a road
 }
+
+// One road to travel to and open a popup on. `key` changes when the request
+// does, so asking for the same road twice still moves the map.
+export interface Focus {
+  key: string;
+  lngLat: [number, number];
+  zoom: number;
+  road: string;                 // road_name to prefer among the roads at that point
+}
+
+// Four arrows pointing outward: the usual mark for "show everything". Drawn as
+// an SVG because Figtree has no glyph for it.
+const FULL_EXTENT_ICON = `<svg viewBox="0 0 24 24" width="19" height="19" fill="none"
+  stroke="#333" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+  <path d="M9 3H3v6M15 3h6v6M9 21H3v-6M15 21h6v-6M3 3l6.5 6.5M21 3l-6.5 6.5M3 21l6.5-6.5M21 21l-6.5-6.5"/>
+</svg>`;
 
 export default function MapView({
   tilesUrl, sourceLayer, classField, score, basemap, opacity, minClass, center, zoom, flyKey,
-  countyKey, onEmptyChange,
+  countyKey, onEmptyChange, fullBounds, fullLabel, focus, onFocusFeature, onInteract,
 }: Props) {
   const div = useRef<HTMLDivElement>(null);
   const map = useRef<Map | null>(null);
@@ -134,6 +155,34 @@ export default function MapView({
   latest.current = { tilesUrl, sourceLayer, classField, score, basemap, opacity, minClass, countyKey };
   const emptyCb = useRef(onEmptyChange);
   emptyCb.current = onEmptyChange;
+  const focusCb = useRef(onFocusFeature);
+  focusCb.current = onFocusFeature;
+  const interactCb = useRef(onInteract);
+  interactCb.current = onInteract;
+  const full = useRef({ fullBounds, fullLabel });
+  full.current = { fullBounds, fullLabel };
+  const fullButton = useRef<HTMLButtonElement | null>(null);
+
+  // Mark one road with the glow and leave a closable popup on it. Shared by a
+  // click and by the guided examples. It reads everything through refs, so the
+  // handlers registered once at map creation can call it safely.
+  const pin = (m: Map, lngLat: maplibregl.LngLatLike, hit: maplibregl.MapGeoJSONFeature) => {
+    const glow = m.getSource("hover") as maplibregl.GeoJSONSource | undefined;
+    hover.current?.remove();
+    pinned.current?.remove();
+    pinned.current = null;
+    glow?.setData({ type: "FeatureCollection", features: [{ type: "Feature", geometry: hit.geometry, properties: {} }] });
+    const p = new maplibregl.Popup({ closeButton: true, maxWidth: "540px", offset: 12 })
+      .setLngLat(lngLat)
+      .setHTML(describe(hit.properties ?? {}, latest.current.classField, latest.current.score,
+        latest.current.countyKey))
+      .addTo(m);
+    p.on("close", () => {
+      if (pinned.current === p) pinned.current = null;
+      (m.getSource("hover") as maplibregl.GeoJSONSource | undefined)?.setData(EMPTY_FC);
+    });
+    pinned.current = p;
+  };
   const wasEmpty = useRef<boolean | null>(null);
 
   // the flyKey the view currently reflects; see the fly effect below
@@ -203,8 +252,10 @@ export default function MapView({
           hitLayer(sourceLayer, classField, minClass),
         ],
       },
-      center: urlView ? [urlView.lon, urlView.lat] : center,
-      zoom: urlView ? urlView.zoom : zoom,
+      // A guided example opens already on its road, so the first thing on
+      // screen is the thing being explained rather than a flight to it.
+      center: urlView ? [urlView.lon, urlView.lat] : focus ? focus.lngLat : center,
+      zoom: urlView ? urlView.zoom : focus ? focus.zoom : zoom,
       maxZoom: 18,
       // Keeps the drawing buffer readable after each frame, so the canvas can
       // be captured. Without it a screenshot of the map comes back blank.
@@ -213,6 +264,26 @@ export default function MapView({
 
     m.addControl(new maplibregl.NavigationControl({ showCompass: true, showZoom: true }), "top-right");
     m.addControl(new maplibregl.ScaleControl({ unit: "imperial" }));
+
+    // "Show it all": the whole county on the detour tab, the whole state on
+    // the pinch tab. It sits under the zoom buttons and borrows their styling.
+    const fullEl = document.createElement("div");
+    fullEl.className = "maplibregl-ctrl maplibregl-ctrl-group";
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.title = full.current.fullLabel;
+    btn.setAttribute("aria-label", full.current.fullLabel);
+    btn.style.display = "flex";
+    btn.style.alignItems = "center";
+    btn.style.justifyContent = "center";
+    btn.innerHTML = FULL_EXTENT_ICON;
+    btn.addEventListener("click", () => {
+      const [w, s, e, n] = full.current.fullBounds;
+      m.fitBounds([[w, s], [e, n]], { padding: 30, duration: 900 });
+    });
+    fullEl.appendChild(btn);
+    fullButton.current = btn;
+    m.addControl({ onAdd: () => fullEl, onRemove: () => fullEl.remove() }, "top-right");
 
     // Keep the centre and zoom in the hash alongside the panel settings, so a
     // reload or a shared link reopens the same place at the same scale.
@@ -272,6 +343,7 @@ export default function MapView({
         glow?.setData(EMPTY_FC);
         return;
       }
+      interactCb.current?.();
       glow?.setData({ type: "FeatureCollection", features: [{ type: "Feature", geometry: hit.geometry, properties: {} }] });
       const html = describe(hit.properties ?? {}, latest.current.classField, latest.current.score,
         latest.current.countyKey);
@@ -295,22 +367,15 @@ export default function MapView({
     // having to hold the cursor still.
     m.on("click", (e: MapMouseEvent) => {
       const hit = pick(e);
-      const glow = m.getSource("hover") as maplibregl.GeoJSONSource | undefined;
-      hover.current?.remove();
-      pinned.current?.remove();
-      pinned.current = null;
-      if (!hit) { glow?.setData(EMPTY_FC); return; }
-      glow?.setData({ type: "FeatureCollection", features: [{ type: "Feature", geometry: hit.geometry, properties: {} }] });
-      const p = new maplibregl.Popup({ closeButton: true, maxWidth: "540px", offset: 12 })
-        .setLngLat(e.lngLat)
-        .setHTML(describe(hit.properties ?? {}, latest.current.classField, latest.current.score,
-        latest.current.countyKey))
-        .addTo(m);
-      p.on("close", () => {
-        if (pinned.current === p) pinned.current = null;
+      if (!hit) {
+        hover.current?.remove();
+        pinned.current?.remove();
+        pinned.current = null;
         (m.getSource("hover") as maplibregl.GeoJSONSource | undefined)?.setData(EMPTY_FC);
-      });
-      pinned.current = p;
+        return;
+      }
+      interactCb.current?.();
+      pin(m, e.lngLat, hit);
     });
 
     map.current = m;
@@ -403,6 +468,68 @@ export default function MapView({
     m.flyTo({ center, zoom, duration: 800 });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [flyKey]);
+
+  // Keep the "show it all" tooltip in step with the tab it applies to.
+  useEffect(() => {
+    const b = fullButton.current;
+    if (!b) return;
+    b.title = fullLabel;
+    b.setAttribute("aria-label", fullLabel);
+  }, [fullLabel]);
+
+  // Go to a guided example's road and open it.
+  //
+  // Declared after the fly effect on purpose: when an example changes the
+  // county in the same update, both run, and the later flyTo is the one that
+  // wins, so the map ends on the road rather than on the county centre.
+  //
+  // The road can only be read once its tiles are drawn, so this waits for
+  // "idle" and looks again each time the map settles. No one-shot flag here,
+  // for the StrictMode reason given above: the cleanup cancels a pending look
+  // and a re-run simply starts a fresh one.
+  useEffect(() => {
+    const m = map.current;
+    if (!m || !focus) return;
+    const target = focus;
+    const c = m.getCenter();
+    const already = Math.abs(c.lng - target.lngLat[0]) < 1e-4
+      && Math.abs(c.lat - target.lngLat[1]) < 1e-4
+      && Math.abs(m.getZoom() - target.zoom) < 0.01;
+    // The road is placed below the middle of the map, not on it. Its popup
+    // opens upward and is tall, so a centred road pushes the popup's heading
+    // and close button off the top edge.
+    const move = { center: target.lngLat, zoom: target.zoom, offset: [0, 150] as [number, number] };
+    if (already) m.easeTo({ ...move, duration: 0 });
+    else m.flyTo({ ...move, duration: 1400 });
+
+    let looks = 0;
+    const look = () => {
+      if (m.isMoving() || !m.getLayer("roads-hit")) return;
+      const pt = m.project(target.lngLat);
+      const R = 12;
+      const hits = m.queryRenderedFeatures(
+        [[pt.x - R, pt.y - R], [pt.x + R, pt.y + R]], { layers: ["roads-hit"] });
+      const named = hits.filter((f) => String(f.properties?.road_name ?? "").includes(target.road));
+      const pool = named.length ? named : [];
+      if (pool.length) {
+        const field = latest.current.classField;
+        const best = pool.reduce((a, f) =>
+          Number(f.properties?.[field] ?? 0) > Number(a.properties?.[field] ?? 0) ? f : a);
+        m.off("idle", look);
+        pin(m, target.lngLat, best);
+        focusCb.current?.(target.key, best.properties ?? {});
+      } else if (++looks >= 6) {
+        // The road is not where it was expected. Say so, and the walkthrough
+        // carries on with its wording that needs no numbers.
+        m.off("idle", look);
+        focusCb.current?.(target.key, null);
+      }
+    };
+    m.on("idle", look);
+    m.triggerRepaint();
+    return () => { m.off("idle", look); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focus?.key]);
 
   return <div ref={div} style={{ position: "absolute", inset: 0 }} />;
 }

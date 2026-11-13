@@ -104,14 +104,23 @@ export interface County {
   tiles: string;            // file in public/data
   center: [number, number];
   zoom: number;
+  bounds: Bounds;           // everything the run covers, for "show it all"
 }
 
+// West, south, east, north in degrees.
+export type Bounds = [number, number, number, number];
+
 // The three counties with a combined detour run. Centres are the county seats,
-// which is close enough for an opening view before the layer loads.
+// and the zoom is close enough that single roads can be told apart on arrival.
+// Bounds are the extent of each run's GeoPackage, which reaches a little past
+// the county line because the runs include roads just outside it.
 export const COUNTIES: County[] = [
-  { id: "haywood", label: "Haywood", tiles: "haywood_detour.pmtiles", center: [-82.98, 35.49], zoom: 10 },
-  { id: "mecklenburg", label: "Mecklenburg", tiles: "mecklenburg_detour.pmtiles", center: [-80.84, 35.23], zoom: 10 },
-  { id: "new_hanover", label: "New Hanover", tiles: "new_hanover_detour.pmtiles", center: [-77.89, 34.21], zoom: 10.5 },
+  { id: "haywood", label: "Haywood", tiles: "haywood_detour.pmtiles", center: [-82.98, 35.49], zoom: 11,
+    bounds: [-83.439, 35.137, -82.563, 35.941] },
+  { id: "mecklenburg", label: "Mecklenburg", tiles: "mecklenburg_detour.pmtiles", center: [-80.84, 35.23], zoom: 11,
+    bounds: [-81.236, 34.855, -80.37, 35.66] },
+  { id: "new_hanover", label: "New Hanover", tiles: "new_hanover_detour.pmtiles", center: [-77.89, 34.21], zoom: 11.5,
+    bounds: [-78.212, 33.839, -77.573, 34.543] },
 ];
 
 // What the viewer opens on: the Haywood detour run.
@@ -136,6 +145,7 @@ export const TILES_BASE = new URL(
 ).href;
 export const NC_CENTER: [number, number] = [-79.4, 35.5];
 export const NC_ZOOM = 6.3;
+export const NC_BOUNDS: Bounds = [-84.33, 33.75, -75.4, 36.6];
 
 // The four services the detour runs cover, named for the panel text.
 export const SERVICES = [
@@ -292,7 +302,15 @@ export function rankSentence(
   if (!isFinite(value) || value <= 0) return null;
   const p = percentileOf(key, value);
   if (p == null) return null;
-  if (p >= 100) return `${words.most} of any road ${words.scope}`;
+  // Index 100 is reached by everything above the 99th breakpoint, which is
+  // one road in a hundred, not one road. Only the road that actually holds
+  // the maximum may be called "the most"; the rest of that top slice beat 99%.
+  if (p >= 100) {
+    const top = PERCENTILES[key][PERCENTILES[key].length - 1];
+    return value >= top * (1 - 1e-9)
+      ? `${words.most} of any road ${words.scope}`
+      : `${words.more} than 99% of roads ${words.scope}`;
+  }
   if (p < 1) return `${words.more} than almost no other road ${words.scope}`;
   return `${words.more} than ${p}% of roads ${words.scope}`;
 }
