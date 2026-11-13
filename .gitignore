@@ -1,0 +1,15 @@
+node_modules
+dist
+
+# PMTiles are built from the analysis repo's GeoPackages by
+# scripts/build_tiles.sh and run to hundreds of megabytes, so they stay out of
+# the repository. Run `npm run tiles` after a fresh clone.
+public/data/*.pmtiles
+
+# Working notes for Claude Code sessions. They stay on the machine and out of
+# the public repository.
+CLAUDE.md
+.claude/
+
+.DS_Store
+*.log

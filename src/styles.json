@@ -1,0 +1,977 @@
+{
+  "combined_band_geometric_class": {
+    "source": "detour_combined_band_geometric.qml",
+    "classes": [
+      {
+        "value": 1,
+        "label": "1 (lowest)",
+        "color": "rgb(1, 99, 153)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 2,
+        "label": "2",
+        "color": "rgb(11, 100, 201)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 3,
+        "label": "3",
+        "color": "rgb(123, 88, 210)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 4,
+        "label": "4",
+        "color": "rgb(185, 71, 187)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 5,
+        "label": "5",
+        "color": "rgb(224, 59, 155)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 6,
+        "label": "6",
+        "color": "rgb(246, 64, 120)",
+        "widthMm": 0.2
+      },
+      {
+        "value": 7,
+        "label": "7",
+        "color": "rgb(255, 82, 99)",
+        "widthMm": 0.2
+      },
+      {
+        "value": 8,
+        "label": "8",
+        "color": "rgb(255, 105, 89)",
+        "widthMm": 0.4
+      },
+      {
+        "value": 9,
+        "label": "9",
+        "color": "rgb(255, 124, 80)",
+        "widthMm": 0.4
+      },
+      {
+        "value": 10,
+        "label": "10 (highest)",
+        "color": "rgb(255, 141, 73)",
+        "widthMm": 0.4
+      }
+    ]
+  },
+  "combined_band_log10_class": {
+    "source": "detour_combined_band_log10.qml",
+    "classes": [
+      {
+        "value": 1,
+        "label": "1 (lowest)",
+        "color": "rgb(1, 99, 153)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 2,
+        "label": "2",
+        "color": "rgb(11, 100, 201)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 3,
+        "label": "3",
+        "color": "rgb(123, 88, 210)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 4,
+        "label": "4",
+        "color": "rgb(185, 71, 187)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 5,
+        "label": "5",
+        "color": "rgb(224, 59, 155)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 6,
+        "label": "6",
+        "color": "rgb(246, 64, 120)",
+        "widthMm": 0.2
+      },
+      {
+        "value": 7,
+        "label": "7",
+        "color": "rgb(255, 82, 99)",
+        "widthMm": 0.2
+      },
+      {
+        "value": 8,
+        "label": "8",
+        "color": "rgb(255, 105, 89)",
+        "widthMm": 0.4
+      },
+      {
+        "value": 9,
+        "label": "9",
+        "color": "rgb(255, 124, 80)",
+        "widthMm": 0.4
+      },
+      {
+        "value": 10,
+        "label": "10 (highest)",
+        "color": "rgb(255, 141, 73)",
+        "widthMm": 0.4
+      }
+    ]
+  },
+  "combined_band_quantile_class": {
+    "source": "detour_combined_band_quantile.qml",
+    "classes": [
+      {
+        "value": 1,
+        "label": "1 (lowest)",
+        "color": "rgb(1, 99, 153)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 2,
+        "label": "2",
+        "color": "rgb(11, 100, 201)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 3,
+        "label": "3",
+        "color": "rgb(123, 88, 210)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 4,
+        "label": "4",
+        "color": "rgb(185, 71, 187)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 5,
+        "label": "5",
+        "color": "rgb(224, 59, 155)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 6,
+        "label": "6",
+        "color": "rgb(246, 64, 120)",
+        "widthMm": 0.2
+      },
+      {
+        "value": 7,
+        "label": "7",
+        "color": "rgb(255, 82, 99)",
+        "widthMm": 0.2
+      },
+      {
+        "value": 8,
+        "label": "8",
+        "color": "rgb(255, 105, 89)",
+        "widthMm": 0.4
+      },
+      {
+        "value": 9,
+        "label": "9",
+        "color": "rgb(255, 124, 80)",
+        "widthMm": 0.4
+      },
+      {
+        "value": 10,
+        "label": "10 (highest)",
+        "color": "rgb(255, 141, 73)",
+        "widthMm": 0.4
+      }
+    ]
+  },
+  "combined_extra_sec_geometric_class": {
+    "source": "detour_combined_extra_sec_geometric.qml",
+    "classes": [
+      {
+        "value": 1,
+        "label": "1 (lowest)",
+        "color": "rgb(1, 99, 153)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 2,
+        "label": "2",
+        "color": "rgb(11, 100, 201)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 3,
+        "label": "3",
+        "color": "rgb(123, 88, 210)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 4,
+        "label": "4",
+        "color": "rgb(185, 71, 187)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 5,
+        "label": "5",
+        "color": "rgb(224, 59, 155)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 6,
+        "label": "6",
+        "color": "rgb(246, 64, 120)",
+        "widthMm": 0.2
+      },
+      {
+        "value": 7,
+        "label": "7",
+        "color": "rgb(255, 82, 99)",
+        "widthMm": 0.2
+      },
+      {
+        "value": 8,
+        "label": "8",
+        "color": "rgb(255, 105, 89)",
+        "widthMm": 0.4
+      },
+      {
+        "value": 9,
+        "label": "9",
+        "color": "rgb(255, 124, 80)",
+        "widthMm": 0.4
+      },
+      {
+        "value": 10,
+        "label": "10 (highest)",
+        "color": "rgb(255, 141, 73)",
+        "widthMm": 0.4
+      }
+    ]
+  },
+  "combined_extra_sec_log10_class": {
+    "source": "detour_combined_extra_sec_log10.qml",
+    "classes": [
+      {
+        "value": 1,
+        "label": "1 (lowest)",
+        "color": "rgb(1, 99, 153)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 2,
+        "label": "2",
+        "color": "rgb(11, 100, 201)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 3,
+        "label": "3",
+        "color": "rgb(123, 88, 210)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 4,
+        "label": "4",
+        "color": "rgb(185, 71, 187)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 5,
+        "label": "5",
+        "color": "rgb(224, 59, 155)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 6,
+        "label": "6",
+        "color": "rgb(246, 64, 120)",
+        "widthMm": 0.2
+      },
+      {
+        "value": 7,
+        "label": "7",
+        "color": "rgb(255, 82, 99)",
+        "widthMm": 0.2
+      },
+      {
+        "value": 8,
+        "label": "8",
+        "color": "rgb(255, 105, 89)",
+        "widthMm": 0.4
+      },
+      {
+        "value": 9,
+        "label": "9",
+        "color": "rgb(255, 124, 80)",
+        "widthMm": 0.4
+      },
+      {
+        "value": 10,
+        "label": "10 (highest)",
+        "color": "rgb(255, 141, 73)",
+        "widthMm": 0.4
+      }
+    ]
+  },
+  "combined_extra_sec_quantile_class": {
+    "source": "detour_combined_extra_sec_quantile.qml",
+    "classes": [
+      {
+        "value": 1,
+        "label": "1 (lowest)",
+        "color": "rgb(1, 99, 153)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 2,
+        "label": "2",
+        "color": "rgb(11, 100, 201)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 3,
+        "label": "3",
+        "color": "rgb(123, 88, 210)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 4,
+        "label": "4",
+        "color": "rgb(185, 71, 187)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 5,
+        "label": "5",
+        "color": "rgb(224, 59, 155)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 6,
+        "label": "6",
+        "color": "rgb(246, 64, 120)",
+        "widthMm": 0.2
+      },
+      {
+        "value": 7,
+        "label": "7",
+        "color": "rgb(255, 82, 99)",
+        "widthMm": 0.2
+      },
+      {
+        "value": 8,
+        "label": "8",
+        "color": "rgb(255, 105, 89)",
+        "widthMm": 0.4
+      },
+      {
+        "value": 9,
+        "label": "9",
+        "color": "rgb(255, 124, 80)",
+        "widthMm": 0.4
+      },
+      {
+        "value": 10,
+        "label": "10 (highest)",
+        "color": "rgb(255, 141, 73)",
+        "widthMm": 0.4
+      }
+    ]
+  },
+  "max_service_geometric_class": {
+    "source": "detour_max_service_geometric.qml",
+    "classes": [
+      {
+        "value": 1,
+        "label": "1 (lowest)",
+        "color": "rgb(1, 99, 153)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 2,
+        "label": "2",
+        "color": "rgb(11, 100, 201)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 3,
+        "label": "3",
+        "color": "rgb(123, 88, 210)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 4,
+        "label": "4",
+        "color": "rgb(185, 71, 187)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 5,
+        "label": "5",
+        "color": "rgb(224, 59, 155)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 6,
+        "label": "6",
+        "color": "rgb(246, 64, 120)",
+        "widthMm": 0.2
+      },
+      {
+        "value": 7,
+        "label": "7",
+        "color": "rgb(255, 82, 99)",
+        "widthMm": 0.2
+      },
+      {
+        "value": 8,
+        "label": "8",
+        "color": "rgb(255, 105, 89)",
+        "widthMm": 0.4
+      },
+      {
+        "value": 9,
+        "label": "9",
+        "color": "rgb(255, 124, 80)",
+        "widthMm": 0.4
+      },
+      {
+        "value": 10,
+        "label": "10 (highest)",
+        "color": "rgb(255, 141, 73)",
+        "widthMm": 0.4
+      }
+    ]
+  },
+  "max_service_log10_class": {
+    "source": "detour_max_service_log10.qml",
+    "classes": [
+      {
+        "value": 1,
+        "label": "1 (lowest)",
+        "color": "rgb(1, 99, 153)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 2,
+        "label": "2",
+        "color": "rgb(11, 100, 201)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 3,
+        "label": "3",
+        "color": "rgb(123, 88, 210)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 4,
+        "label": "4",
+        "color": "rgb(185, 71, 187)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 5,
+        "label": "5",
+        "color": "rgb(224, 59, 155)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 6,
+        "label": "6",
+        "color": "rgb(246, 64, 120)",
+        "widthMm": 0.2
+      },
+      {
+        "value": 7,
+        "label": "7",
+        "color": "rgb(255, 82, 99)",
+        "widthMm": 0.2
+      },
+      {
+        "value": 8,
+        "label": "8",
+        "color": "rgb(255, 105, 89)",
+        "widthMm": 0.4
+      },
+      {
+        "value": 9,
+        "label": "9",
+        "color": "rgb(255, 124, 80)",
+        "widthMm": 0.4
+      },
+      {
+        "value": 10,
+        "label": "10 (highest)",
+        "color": "rgb(255, 141, 73)",
+        "widthMm": 0.4
+      }
+    ]
+  },
+  "max_service_quantile_class": {
+    "source": "detour_max_service_quantile.qml",
+    "classes": [
+      {
+        "value": 1,
+        "label": "1 (lowest)",
+        "color": "rgb(1, 99, 153)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 2,
+        "label": "2",
+        "color": "rgb(11, 100, 201)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 3,
+        "label": "3",
+        "color": "rgb(123, 88, 210)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 4,
+        "label": "4",
+        "color": "rgb(185, 71, 187)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 5,
+        "label": "5",
+        "color": "rgb(224, 59, 155)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 6,
+        "label": "6",
+        "color": "rgb(246, 64, 120)",
+        "widthMm": 0.2
+      },
+      {
+        "value": 7,
+        "label": "7",
+        "color": "rgb(255, 82, 99)",
+        "widthMm": 0.2
+      },
+      {
+        "value": 8,
+        "label": "8",
+        "color": "rgb(255, 105, 89)",
+        "widthMm": 0.4
+      },
+      {
+        "value": 9,
+        "label": "9",
+        "color": "rgb(255, 124, 80)",
+        "widthMm": 0.4
+      },
+      {
+        "value": 10,
+        "label": "10 (highest)",
+        "color": "rgb(255, 141, 73)",
+        "widthMm": 0.4
+      }
+    ]
+  },
+  "mean_service_geometric_class": {
+    "source": "detour_mean_service_geometric.qml",
+    "classes": [
+      {
+        "value": 1,
+        "label": "1 (lowest)",
+        "color": "rgb(1, 99, 153)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 2,
+        "label": "2",
+        "color": "rgb(11, 100, 201)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 3,
+        "label": "3",
+        "color": "rgb(123, 88, 210)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 4,
+        "label": "4",
+        "color": "rgb(185, 71, 187)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 5,
+        "label": "5",
+        "color": "rgb(224, 59, 155)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 6,
+        "label": "6",
+        "color": "rgb(246, 64, 120)",
+        "widthMm": 0.2
+      },
+      {
+        "value": 7,
+        "label": "7",
+        "color": "rgb(255, 82, 99)",
+        "widthMm": 0.2
+      },
+      {
+        "value": 8,
+        "label": "8",
+        "color": "rgb(255, 105, 89)",
+        "widthMm": 0.4
+      },
+      {
+        "value": 9,
+        "label": "9",
+        "color": "rgb(255, 124, 80)",
+        "widthMm": 0.4
+      },
+      {
+        "value": 10,
+        "label": "10 (highest)",
+        "color": "rgb(255, 141, 73)",
+        "widthMm": 0.4
+      }
+    ]
+  },
+  "mean_service_log10_class": {
+    "source": "detour_mean_service_log10.qml",
+    "classes": [
+      {
+        "value": 1,
+        "label": "1 (lowest)",
+        "color": "rgb(1, 99, 153)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 2,
+        "label": "2",
+        "color": "rgb(11, 100, 201)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 3,
+        "label": "3",
+        "color": "rgb(123, 88, 210)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 4,
+        "label": "4",
+        "color": "rgb(185, 71, 187)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 5,
+        "label": "5",
+        "color": "rgb(224, 59, 155)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 6,
+        "label": "6",
+        "color": "rgb(246, 64, 120)",
+        "widthMm": 0.2
+      },
+      {
+        "value": 7,
+        "label": "7",
+        "color": "rgb(255, 82, 99)",
+        "widthMm": 0.2
+      },
+      {
+        "value": 8,
+        "label": "8",
+        "color": "rgb(255, 105, 89)",
+        "widthMm": 0.4
+      },
+      {
+        "value": 9,
+        "label": "9",
+        "color": "rgb(255, 124, 80)",
+        "widthMm": 0.4
+      },
+      {
+        "value": 10,
+        "label": "10 (highest)",
+        "color": "rgb(255, 141, 73)",
+        "widthMm": 0.4
+      }
+    ]
+  },
+  "mean_service_quantile_class": {
+    "source": "detour_mean_service_quantile.qml",
+    "classes": [
+      {
+        "value": 1,
+        "label": "1 (lowest)",
+        "color": "rgb(1, 99, 153)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 2,
+        "label": "2",
+        "color": "rgb(11, 100, 201)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 3,
+        "label": "3",
+        "color": "rgb(123, 88, 210)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 4,
+        "label": "4",
+        "color": "rgb(185, 71, 187)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 5,
+        "label": "5",
+        "color": "rgb(224, 59, 155)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 6,
+        "label": "6",
+        "color": "rgb(246, 64, 120)",
+        "widthMm": 0.2
+      },
+      {
+        "value": 7,
+        "label": "7",
+        "color": "rgb(255, 82, 99)",
+        "widthMm": 0.2
+      },
+      {
+        "value": 8,
+        "label": "8",
+        "color": "rgb(255, 105, 89)",
+        "widthMm": 0.4
+      },
+      {
+        "value": 9,
+        "label": "9",
+        "color": "rgb(255, 124, 80)",
+        "widthMm": 0.4
+      },
+      {
+        "value": 10,
+        "label": "10 (highest)",
+        "color": "rgb(255, 141, 73)",
+        "widthMm": 0.4
+      }
+    ]
+  },
+  "pinch_geometric_class": {
+    "source": "north_carolina_pinch_points_geometric.qml",
+    "classes": [
+      {
+        "value": 1,
+        "label": "1 (lowest)",
+        "color": "rgb(1, 99, 153)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 2,
+        "label": "2",
+        "color": "rgb(11, 100, 201)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 3,
+        "label": "3",
+        "color": "rgb(123, 88, 210)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 4,
+        "label": "4",
+        "color": "rgb(185, 71, 187)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 5,
+        "label": "5",
+        "color": "rgb(224, 59, 155)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 6,
+        "label": "6",
+        "color": "rgb(246, 64, 120)",
+        "widthMm": 0.2
+      },
+      {
+        "value": 7,
+        "label": "7",
+        "color": "rgb(255, 82, 99)",
+        "widthMm": 0.2
+      },
+      {
+        "value": 8,
+        "label": "8",
+        "color": "rgb(255, 105, 89)",
+        "widthMm": 0.4
+      },
+      {
+        "value": 9,
+        "label": "9",
+        "color": "rgb(255, 124, 80)",
+        "widthMm": 0.4
+      },
+      {
+        "value": 10,
+        "label": "10 (highest)",
+        "color": "rgb(255, 141, 73)",
+        "widthMm": 0.4
+      }
+    ]
+  },
+  "pinch_log10_class": {
+    "source": "north_carolina_pinch_points_log10.qml",
+    "classes": [
+      {
+        "value": 1,
+        "label": "1 (lowest)",
+        "color": "rgb(1, 99, 153)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 2,
+        "label": "2",
+        "color": "rgb(11, 100, 201)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 3,
+        "label": "3",
+        "color": "rgb(123, 88, 210)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 4,
+        "label": "4",
+        "color": "rgb(185, 71, 187)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 5,
+        "label": "5",
+        "color": "rgb(224, 59, 155)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 6,
+        "label": "6",
+        "color": "rgb(246, 64, 120)",
+        "widthMm": 0.2
+      },
+      {
+        "value": 7,
+        "label": "7",
+        "color": "rgb(255, 82, 99)",
+        "widthMm": 0.2
+      },
+      {
+        "value": 8,
+        "label": "8",
+        "color": "rgb(255, 105, 89)",
+        "widthMm": 0.4
+      },
+      {
+        "value": 9,
+        "label": "9",
+        "color": "rgb(255, 124, 80)",
+        "widthMm": 0.4
+      },
+      {
+        "value": 10,
+        "label": "10 (highest)",
+        "color": "rgb(255, 141, 73)",
+        "widthMm": 0.4
+      }
+    ]
+  },
+  "pinch_quantile_class": {
+    "source": "north_carolina_pinch_points_quantile.qml",
+    "classes": [
+      {
+        "value": 1,
+        "label": "1 (lowest)",
+        "color": "rgb(1, 99, 153)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 2,
+        "label": "2",
+        "color": "rgb(11, 100, 201)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 3,
+        "label": "3",
+        "color": "rgb(123, 88, 210)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 4,
+        "label": "4",
+        "color": "rgb(185, 71, 187)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 5,
+        "label": "5",
+        "color": "rgb(224, 59, 155)",
+        "widthMm": 0.1
+      },
+      {
+        "value": 6,
+        "label": "6",
+        "color": "rgb(246, 64, 120)",
+        "widthMm": 0.2
+      },
+      {
+        "value": 7,
+        "label": "7",
+        "color": "rgb(255, 82, 99)",
+        "widthMm": 0.2
+      },
+      {
+        "value": 8,
+        "label": "8",
+        "color": "rgb(255, 105, 89)",
+        "widthMm": 0.4
+      },
+      {
+        "value": 9,
+        "label": "9",
+        "color": "rgb(255, 124, 80)",
+        "widthMm": 0.4
+      },
+      {
+        "value": 10,
+        "label": "10 (highest)",
+        "color": "rgb(255, 141, 73)",
+        "widthMm": 0.4
+      }
+    ]
+  }
+}

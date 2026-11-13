@@ -1,0 +1,233 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Hosting for the road network connectivity viewer: a private S3 bucket,
+  a CloudFront distribution serving it over HTTPS at one nemac.org subdomain,
+  the DNS records for that name, and the role GitHub Actions deploys with.
+
+# Deploy or update (us-east-1, because CloudFront certificates must live there):
+#
+#   aws cloudformation deploy \
+#     --region us-east-1 \
+#     --stack-name road-network-connectivity \
+#     --template-file infra/site.yml \
+#     --capabilities CAPABILITY_NAMED_IAM \
+#     --parameter-overrides \
+#       HostedZoneId=<nemac.org hosted zone id> \
+#       CertificateArn=<arn of the issued *.nemac.org certificate> \
+#       GitHubOidcProviderArn=<arn of the account's GitHub OIDC provider>
+#
+# The three values are parameters rather than defaults so that no account
+# identifier is committed to a public repository.
+
+Parameters:
+  DomainName:
+    Type: String
+    Default: road-network-connectivity.nemac.org
+  BucketName:
+    Type: String
+    Default: nemac-road-network-connectivity
+    Description: >
+      No dots in the name. A dotted bucket name does not match S3's wildcard
+      TLS certificate, which complicates HTTPS access to the bucket.
+  HostedZoneId:
+    Type: AWS::Route53::HostedZone::Id
+    Description: The nemac.org hosted zone.
+  CertificateArn:
+    Type: String
+    Description: An issued ACM certificate in us-east-1 covering DomainName.
+  GitHubOidcProviderArn:
+    Type: String
+    Description: The existing IAM OIDC provider for token.actions.githubusercontent.com.
+  GitHubRepo:
+    Type: String
+    Default: nemac/convectivity-helpers-viewer
+  GitHubBranch:
+    Type: String
+    Default: master
+
+Resources:
+  # Private. Only CloudFront can read it, through the bucket policy below.
+  SiteBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Ref BucketName
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      # Answers the browser's preflight check for the origins allowed to load
+      # the tiles. Keep this list the same as TileCorsPolicy below.
+      CorsConfiguration:
+        CorsRules:
+          - AllowedOrigins:
+              - !Sub "https://${DomainName}"
+              - http://localhost:5190
+              - http://127.0.0.1:5190
+            AllowedMethods: [GET, HEAD]
+            AllowedHeaders: ["*"]
+            ExposedHeaders: [Content-Range, Content-Length, Accept-Ranges, ETag]
+            MaxAge: 3600
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  OriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${AWS::StackName}-oac"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  # Which web pages may load files from this site in a browser: the site itself
+  # and a dev server on localhost:5190, so a fresh clone can draw the published
+  # tiles. Pages anywhere else are refused by the browser.
+  #
+  # This is a browser rule, not a lock. Someone who knows a tile's address can
+  # still download it directly, as with any public map.
+  TileCorsPolicy:
+    Type: AWS::CloudFront::ResponseHeadersPolicy
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Name: !Sub "${AWS::StackName}-cors"
+        CorsConfig:
+          AccessControlAllowCredentials: false
+          AccessControlAllowOrigins:
+            Items:
+              - !Sub "https://${DomainName}"
+              - http://localhost:5190
+              - http://127.0.0.1:5190
+          AccessControlAllowMethods:
+            Items: [GET, HEAD]
+          AccessControlAllowHeaders:
+            Items: ["*"]
+          AccessControlExposeHeaders:
+            Items: [Content-Range, Content-Length, Accept-Ranges, ETag]
+          AccessControlMaxAgeSec: 3600
+          OriginOverride: true
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Ref DomainName
+        Aliases:
+          - !Ref DomainName
+        DefaultRootObject: index.html
+        HttpVersion: http2and3
+        IPV6Enabled: true
+        PriceClass: PriceClass_100
+        Origins:
+          - Id: site-bucket
+            DomainName: !GetAtt SiteBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt OriginAccessControl.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+        DefaultCacheBehavior:
+          TargetOriginId: site-bucket
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          CachedMethods: [GET, HEAD]
+          Compress: true
+          ResponseHeadersPolicyId: !Ref TileCorsPolicy
+          # AWS managed policy "CORS-S3Origin": passes the browser's origin
+          # through to the bucket so it can answer preflight checks.
+          OriginRequestPolicyId: 88a5eaf4-2fd4-4709-b370-b4c650ea3fcf
+          # AWS managed policy "CachingOptimized". CloudFront answers the byte
+          # range requests PMTiles relies on without further configuration.
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+        ViewerCertificate:
+          AcmCertificateArn: !Ref CertificateArn
+          SslSupportMethod: sni-only
+          MinimumProtocolVersion: TLSv1.2_2021
+
+  SiteBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref SiteBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: CloudFrontRead
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub "${SiteBucket.Arn}/*"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${Distribution}"
+
+  # Z2FDTNDATAQYW2 is the fixed hosted zone id of every CloudFront distribution.
+  DnsA:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref DomainName
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt Distribution.DomainName
+        HostedZoneId: Z2FDTNDATAQYW2
+  DnsAAAA:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref DomainName
+      Type: AAAA
+      AliasTarget:
+        DNSName: !GetAtt Distribution.DomainName
+        HostedZoneId: Z2FDTNDATAQYW2
+
+  # What the GitHub workflow signs in as. Only a run on GitHubBranch of
+  # GitHubRepo can assume it, and it holds no long-lived keys.
+  DeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-github-actions"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Ref GitHubOidcProviderArn
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: !Sub "repo:${GitHubRepo}:ref:refs/heads/${GitHubBranch}"
+      Policies:
+        - PolicyName: deploy-site
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: s3:ListBucket
+                Resource: !GetAtt SiteBucket.Arn
+              - Effect: Allow
+                Action: [s3:GetObject, s3:PutObject, s3:DeleteObject]
+                Resource: !Sub "${SiteBucket.Arn}/*"
+              # The tiles under data/ are uploaded from a workstation by
+              # scripts/publish_tiles.sh. The workflow must never be able to
+              # overwrite or delete them, whatever its sync command says.
+              - Effect: Deny
+                Action: [s3:PutObject, s3:DeleteObject]
+                Resource: !Sub "${SiteBucket.Arn}/data/*"
+              - Effect: Allow
+                Action: cloudfront:CreateInvalidation
+                Resource: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${Distribution}"
+
+Outputs:
+  SiteUrl:
+    Value: !Sub "https://${DomainName}/"
+  BucketName:
+    Value: !Ref SiteBucket
+  DistributionId:
+    Value: !Ref Distribution
+  DeployRoleArn:
+    Value: !GetAtt DeployRole.Arn

@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Road network connectivity viewer</title>
+    <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.5.0/dist/maplibre-gl.css" />
+    <style>
+      /* Figtree, bundled from Google Fonts (OFL licence in fonts/OFL.txt) so it works offline */
+      @font-face { font-family: "Figtree"; font-style: normal; font-weight: 300 900; font-display: swap; src: url("./fonts/Figtree-Variable.ttf") format("truetype"); }
+      @font-face { font-family: "Figtree"; font-style: italic; font-weight: 300 900; font-display: swap; src: url("./fonts/Figtree-Italic-Variable.ttf") format("truetype"); }
+      html, body, #root { height: 100%; margin: 0; font-family: Figtree, Helvetica, Arial, sans-serif; }
+      .maplibregl-ctrl, .maplibregl-popup { font-family: Figtree, Helvetica, Arial, sans-serif; }
+      /* Right padding clears the close button, which sits over the content. */
+      .maplibregl-popup-content { padding: 11px 34px 12px 13px; border-radius: 6px; font-size: 12px; line-height: 1.5; }
+      /* MapLibre's default close button is a few pixels across and easy to miss. */
+      .maplibregl-popup-close-button {
+        width: 26px; height: 26px; top: 3px; right: 3px;
+        font-size: 24px; line-height: 24px; font-weight: 400;
+        color: #55616d; border-radius: 5px;
+      }
+      .maplibregl-popup-close-button:hover { background: #eceef1; color: #10171f; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
