@@ -20,6 +20,20 @@
         color: #55616d; border-radius: 5px;
       }
       .maplibregl-popup-close-button:hover { background: #eceef1; color: #10171f; }
+      /* The guide popup on a first visit, in Night Sky (#003865 in src/brand.ts).
+         The tip is recoloured on whichever side MapLibre has anchored it. */
+      .guide-popup .maplibregl-popup-content {
+        background: #003865; color: #fff; padding: 14px 16px 12px; border-radius: 12px;
+        box-shadow: 0 12px 32px rgba(0, 20, 45, 0.38);
+      }
+      .guide-popup.maplibregl-popup-anchor-bottom .maplibregl-popup-tip,
+      .guide-popup.maplibregl-popup-anchor-bottom-left .maplibregl-popup-tip,
+      .guide-popup.maplibregl-popup-anchor-bottom-right .maplibregl-popup-tip { border-top-color: #003865; }
+      .guide-popup.maplibregl-popup-anchor-top .maplibregl-popup-tip,
+      .guide-popup.maplibregl-popup-anchor-top-left .maplibregl-popup-tip,
+      .guide-popup.maplibregl-popup-anchor-top-right .maplibregl-popup-tip { border-bottom-color: #003865; }
+      .guide-popup.maplibregl-popup-anchor-left .maplibregl-popup-tip { border-right-color: #003865; }
+      .guide-popup.maplibregl-popup-anchor-right .maplibregl-popup-tip { border-left-color: #003865; }
     </style>
   </head>
   <body>

@@ -1,4 +1,5 @@
-import { useEffect, useRef } from "react";
+import { ReactNode, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import maplibregl, { Map, MapMouseEvent } from "maplibre-gl";
 import { Protocol } from "pmtiles";
 import {
@@ -123,10 +124,18 @@ interface Props {
   focus?: Focus | null;         // a road to go to and open, for the guided examples
   onFocusFeature?: (key: string, props: Record<string, any> | null) => void;
   onInteract?: () => void;      // the reader has hovered or clicked a road
+  // The guide shown inside the popup on the focus road, in place of the
+  // road's numbers. Null closes that popup.
+  guide?: ReactNode | null;
+  // A click on the map while the guide popup is open. Returning true means the
+  // click was used by the guide, and the popup stays.
+  onGuideAway?: () => boolean;
+  // The map closed the guide popup itself, by a click it let through.
+  onGuideClosed?: () => void;
 }
 
-// One road to travel to and open a popup on. `key` changes when the request
-// does, so asking for the same road twice still moves the map.
+// One road to travel to and open the guide popup on. `key` changes when the
+// request does, so asking for the same road twice still moves the map.
 export interface Focus {
   key: string;
   lngLat: [number, number];
@@ -144,6 +153,7 @@ const FULL_EXTENT_ICON = `<svg viewBox="0 0 24 24" width="19" height="19" fill="
 export default function MapView({
   tilesUrl, sourceLayer, classField, score, basemap, opacity, minClass, center, zoom, flyKey,
   countyKey, onEmptyChange, fullBounds, fullLabel, focus, onFocusFeature, onInteract,
+  guide, onGuideAway, onGuideClosed,
 }: Props) {
   const div = useRef<HTMLDivElement>(null);
   const map = useRef<Map | null>(null);
@@ -162,26 +172,83 @@ export default function MapView({
   const full = useRef({ fullBounds, fullLabel });
   full.current = { fullBounds, fullLabel };
   const fullButton = useRef<HTMLButtonElement | null>(null);
+  const awayCb = useRef(onGuideAway);
+  awayCb.current = onGuideAway;
+  const guideClosedCb = useRef(onGuideClosed);
+  guideClosedCb.current = onGuideClosed;
+  const guideOn = useRef(false);
+  guideOn.current = guide != null;
+
+  // The popup holding the guide, and the element inside it that React draws
+  // the guide into. MapLibre owns the popup; React only fills it.
+  const guidePopup = useRef<maplibregl.Popup | null>(null);
+  const [guideHost, setGuideHost] = useState<HTMLElement | null>(null);
 
   // Mark one road with the glow and leave a closable popup on it. Shared by a
   // click and by the guided examples. It reads everything through refs, so the
   // handlers registered once at map creation can call it safely.
-  const pin = (m: Map, lngLat: maplibregl.LngLatLike, hit: maplibregl.MapGeoJSONFeature) => {
+  //
+  // With `asGuide`, the popup is the dark guide instead of the road's numbers.
+  // It has no close button of its own (the guide draws one) and does not shut
+  // on a map click, because the first click away is the guide's to answer.
+  // `hit` may be null then, when the road could not be found, and the guide
+  // still opens at the spot without the glow.
+  //
+  // The guide is always anchored above the road. Left to choose, MapLibre
+  // flips a popup below its point when it is taller than the room above, even
+  // with less room below, and the guide's Back and Next row then jumps and is
+  // cut off by the map's edge. Fixed to "bottom", its lower edge, where those
+  // buttons are, stays put from step to step. The room above the road is
+  // handed to the guide as --guide-room, so a step too tall for it scrolls
+  // inside the popup instead.
+  const pin = (m: Map, lngLat: maplibregl.LngLatLike, hit: maplibregl.MapGeoJSONFeature | null,
+               asGuide = false) => {
     const glow = m.getSource("hover") as maplibregl.GeoJSONSource | undefined;
     hover.current?.remove();
     pinned.current?.remove();
     pinned.current = null;
-    glow?.setData({ type: "FeatureCollection", features: [{ type: "Feature", geometry: hit.geometry, properties: {} }] });
-    const p = new maplibregl.Popup({ closeButton: true, maxWidth: "540px", offset: 12 })
-      .setLngLat(lngLat)
-      .setHTML(describe(hit.properties ?? {}, latest.current.classField, latest.current.score,
-        latest.current.countyKey))
-      .addTo(m);
+    glow?.setData(hit
+      ? { type: "FeatureCollection", features: [{ type: "Feature", geometry: hit.geometry, properties: {} }] }
+      : EMPTY_FC);
+    const p = new maplibregl.Popup(asGuide
+      ? { closeButton: false, closeOnClick: false, maxWidth: "400px", offset: 14,
+          className: "guide-popup", anchor: "bottom" }
+      : { closeButton: true, maxWidth: "540px", offset: 12 })
+      .setLngLat(lngLat);
+    const host = asGuide ? document.createElement("div") : null;
+    // offset 14, tip 10, a 10 px margin at the top, and the popup's own
+    // padding of 14 above and 12 below
+    const fit = () => {
+      if (host) host.style.setProperty("--guide-room", `${Math.max(180, m.project(p.getLngLat()).y - 60)}px`);
+    };
+    if (host) {
+      p.setDOMContent(host);
+      fit();
+      m.on("move", fit);
+      m.on("resize", fit);
+    } else {
+      p.setHTML(describe(hit?.properties ?? {}, latest.current.classField, latest.current.score,
+        latest.current.countyKey));
+    }
+    p.addTo(m);
     p.on("close", () => {
       if (pinned.current === p) pinned.current = null;
       (m.getSource("hover") as maplibregl.GeoJSONSource | undefined)?.setData(EMPTY_FC);
+      if (guidePopup.current === p) {
+        m.off("move", fit);
+        m.off("resize", fit);
+        guidePopup.current = null;
+        setGuideHost(null);
+        // Only news to the page when the map shut it. When the page shut it,
+        // the guide is already gone from the props.
+        if (guideOn.current) guideClosedCb.current?.();
+      }
     });
     pinned.current = p;
+    if (host) {
+      guidePopup.current = p;
+      setGuideHost(host);
+    }
   };
   const wasEmpty = useRef<boolean | null>(null);
 
@@ -331,13 +398,25 @@ export default function MapView({
         Number(f.properties?.[field] ?? 0) > Number(best.properties?.[field] ?? 0) ? f : best);
     };
 
+    // Whether the guide popup is pinned and can actually be seen. Once the
+    // reader has dragged it off screen it no longer gets a say: hover and
+    // clicks behave as they would with no guide, rather than a hidden popup
+    // silently turning hover off and eating the first click.
+    const guideInView = () => {
+      const g = guidePopup.current;
+      return !!g && g === pinned.current && m.getBounds().contains(g.getLngLat());
+    };
+
     m.on("mousemove", (e: MapMouseEvent) => {
       const hit = pick(e);
       m.getCanvas().style.cursor = hit ? "pointer" : "";
       // A pinned popup from a click wins: the hover one would sit on top of it
       // and fight for the same space.
       const glow = m.getSource("hover") as maplibregl.GeoJSONSource | undefined;
-      if (pinned.current) { hover.current?.remove(); return; }
+      if (pinned.current && (pinned.current !== guidePopup.current || guideInView())) {
+        hover.current?.remove();
+        return;
+      }
       if (!hit) {
         hover.current?.remove();
         glow?.setData(EMPTY_FC);
@@ -356,16 +435,29 @@ export default function MapView({
       hover.current.setLngLat(e.lngLat).setHTML(html).addTo(m);
     });
 
-    // Leaving the canvas entirely, which mousemove never reports.
+    // Leaving the canvas entirely, which mousemove never reports. That
+    // includes moving onto a popup, so the glow stays when a popup is pinned:
+    // it marks the road the popup is about, and the guide's words point at it.
     m.getCanvas().addEventListener("mouseout", () => {
       hover.current?.remove();
-      (m.getSource("hover") as maplibregl.GeoJSONSource | undefined)?.setData(EMPTY_FC);
+      if (!pinned.current) {
+        (m.getSource("hover") as maplibregl.GeoJSONSource | undefined)?.setData(EMPTY_FC);
+      }
       m.getCanvas().style.cursor = "";
     });
 
     // Click pins a popup so it can be read and its text selected without
     // having to hold the cursor still.
     m.on("click", (e: MapMouseEvent) => {
+      // While the guide is open and in view, the page gets first say on a
+      // click. If it uses the click, the guide stays; otherwise the click goes
+      // on as usual and shuts the guide on the way. The second click of a
+      // double-click (a zoom) is never a click away: without this, one
+      // double-click would use the nudge and close the guide together.
+      if (guideInView()) {
+        if (e.originalEvent.detail > 1) return;
+        if (awayCb.current?.()) return;
+      }
       const hit = pick(e);
       if (!hit) {
         hover.current?.remove();
@@ -516,12 +608,14 @@ export default function MapView({
         const best = pool.reduce((a, f) =>
           Number(f.properties?.[field] ?? 0) > Number(a.properties?.[field] ?? 0) ? f : a);
         m.off("idle", look);
-        pin(m, target.lngLat, best);
+        pin(m, target.lngLat, best, true);
         focusCb.current?.(target.key, best.properties ?? {});
       } else if (++looks >= 6) {
-        // The road is not where it was expected. Say so, and the walkthrough
-        // carries on with its wording that needs no numbers.
+        // The road is not where it was expected. Say so, and the guide carries
+        // on with its wording that needs no numbers, still in its popup at the
+        // spot, just without a road to glow.
         m.off("idle", look);
+        pin(m, target.lngLat, null, true);
         focusCb.current?.(target.key, null);
       }
     };
@@ -531,7 +625,19 @@ export default function MapView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focus?.key]);
 
-  return <div ref={div} style={{ position: "absolute", inset: 0 }} />;
+  // The page took the guide away (its close button, Done, or a change in the
+  // panel), so take its popup off the map.
+  const hasGuide = guide != null;
+  useEffect(() => {
+    if (!hasGuide) guidePopup.current?.remove();
+  }, [hasGuide]);
+
+  return (
+    <>
+      <div ref={div} style={{ position: "absolute", inset: 0 }} />
+      {guideHost && guide != null && createPortal(guide, guideHost)}
+    </>
+  );
 }
 
 // The popup for one segment.

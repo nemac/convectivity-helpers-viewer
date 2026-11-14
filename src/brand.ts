@@ -22,3 +22,10 @@ export const ORG_URL = "https://nemac.unca.edu/";
 // swapping in a different mark cannot be masked by a stale browser cache at
 // the old URL.
 export const ORG_LOGO = "brand/nemac-unca-logo-h-white.svg";
+
+// The same lockup with every letter stroked slightly thicker, which is what
+// the header shows. At header size the line "National Environmental Mapping
+// & Applications Center" is about 7 pixels tall: its thin serifs break up into
+// grey blocks on a standard screen and read as faint on a Retina one. ORG_LOGO
+// above stays the official artwork, unchanged.
+export const ORG_LOGO_SCREEN = "brand/nemac-unca-logo-h-white-screen.svg";

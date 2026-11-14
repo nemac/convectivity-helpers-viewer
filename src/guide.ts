@@ -1,13 +1,16 @@
-// The guided examples: one real road per county on each tab, and the short
-// plain-English walkthrough shown beside it.
+// The guide: one real road per tab, a few short plain-English steps about it,
+// and then a walk through the controls in the panel.
 //
-// The words are written here but the numbers are not. Each step is filled in
-// from the road's own properties as the map reads them out of the tiles, so
-// the walkthrough always agrees with the popup next to it and cannot go stale
-// when an analysis is re-run. If the road cannot be read, every step still
-// makes sense without its numbers.
+// The words are written here but the numbers are not. Each road step is
+// filled in from the road's own properties as the map reads them out of the
+// tiles, so the guide cannot go stale when an analysis is re-run. If the road
+// cannot be read, every step still makes sense without its numbers.
+//
+// The steps about the panel reuse the panel's own descriptions (the score
+// help and the classification lines in config.ts), so the guide and the
+// panel always say the same thing in the same words.
 import {
-  PINCH_MAX_DETOUR_M, PINCH_NO_ALTERNATIVE_M, STYLES, TabId,
+  DETOUR_SCORES, METHODS, PINCH_MAX_DETOUR_M, PINCH_NO_ALTERNATIVE_M, STYLES, TabId,
   humanMiles, humanNumber, rankSentence, splitNames,
 } from "./config";
 
@@ -24,8 +27,12 @@ export interface Example {
 // Chosen from the analysis outputs: on the detour tab, the named road whose
 // closure adds the most driving in each county; on the pinch tab, the
 // strongest named pinch point inside each county. Coordinates are segment
-// midpoints. If a re-run moves a segment, the walkthrough falls back to its
-// wording without numbers rather than describing the wrong road.
+// midpoints. If a re-run moves a segment, the guide falls back to its wording
+// without numbers rather than describing the wrong road.
+//
+// Only the first road on each tab is opened today, by a first visit and by
+// the round "Start the guide" button. The others are kept so a guide per
+// county can come back without picking roads again.
 export const EXAMPLES: Example[] = [
   { id: "detour-haywood", tab: "detour", county: "haywood", countyLabel: "Haywood",
     road: "Soco Road", lngLat: [-83.08013, 35.51339], zoom: 13 },
@@ -44,9 +51,34 @@ export const EXAMPLES: Example[] = [
 // What a first visit with no link opens on.
 export const OPENING_EXAMPLE = EXAMPLES[0];
 
+// What the round "Start the guide" button opens: the first example on the tab
+// being looked at.
+export const firstExample = (tab: TabId): Example => EXAMPLES.find((e) => e.tab === tab)!;
+
+// Shown once, the first time someone clicks the map while the guide is open,
+// along with the next step. The second click lets them go. When that next
+// step is one of the panel steps, a click on the map no longer closes the
+// guide (trying things is the point there), so it says to use the X instead.
+export const nudge = (next: GuideStep["place"]) =>
+  "Not so fast! We'd really like to help you find your way around this map, so here's the "
+  + (next === "road"
+    ? "next part. Click the map again whenever you'd rather explore on your own."
+    : "next part. Close this box with the X at its top whenever you'd rather explore on your own.");
+
+// The parts of the panel a step can point at. Each one is the `guide` name of
+// a card in App.tsx.
+export type PanelTarget = "county" | "score" | "shows" | "classes" | "legend" | "map" | "methodology";
+
 export interface GuideStep {
   title: string;
   lines: string[];              // each one a whole sentence or two
+  // A short list under the lines: a name in bold and what it means.
+  items?: { label: string; text: string }[];
+  // "road": in the popup on the example road. "panel": in a card on the left
+  // edge of the map, pointing at `target` in the panel (or at nothing, for the
+  // last step).
+  place: "road" | "panel";
+  target?: PanelTarget;
 }
 
 // How a class is drawn, in the words someone would use looking at the map.
@@ -64,15 +96,65 @@ function roughly(seconds: number): string {
   return `about ${round3(seconds / 3600)} hours`;
 }
 
-const TRY_IT = [
-  "Move your mouse over any road to see its numbers. Click a road to keep them on the screen.",
-];
-
-// The swatch colour for the example road, so the walkthrough can show the
-// colour it is talking about.
+// The swatch colour for the example road, so the guide can show the colour it
+// is talking about.
 export function classColor(classField: string, props: Record<string, any> | null): string | null {
   const cls = Number(props?.[classField]);
   return STYLES[classField]?.classes.find((c) => c.value === cls)?.color ?? null;
+}
+
+// The walk through the panel, the same on both tabs apart from the two
+// controls only the detour tab has.
+function panelSteps(tab: TabId): GuideStep[] {
+  // In the order the cards sit in the panel, top to bottom.
+  const steps: GuideStep[] = [];
+  if (tab === "detour") {
+    steps.push({ place: "panel", target: "shows", title: "What the map shows", lines: [
+      "The panel on the left holds the controls. This box at the top names the question "
+        + "the colours are answering right now, and says what it means in a sentence or two.",
+      "It changes whenever you pick something else from \"Choose what the map shows\" below it.",
+    ] });
+    steps.push({ place: "panel", target: "county", title: "Pick a county", lines: [
+      "\"Choose a county\" switches between Haywood, Mecklenburg and New Hanover counties.",
+      "Pick one and the map moves there. Go ahead and try it. This guide will wait.",
+    ] });
+    steps.push({ place: "panel", target: "score", title: "Choose what the map shows", lines: [
+      "This list changes the question the colours on the map answer. There are four to "
+        + "choose from.",
+    ], items: DETOUR_SCORES.map((s) => ({ label: s.label, text: s.help })) });
+  } else {
+    steps.push({ place: "panel", target: "shows", title: "What the map shows", lines: [
+      "The panel on the left holds the controls. This box at the top names what the colours "
+        + "on the map measure, and says what it means in a sentence or two.",
+      "On this tab there is one measure, the pinch score, so there is nothing to choose here.",
+    ] });
+  }
+  steps.push({ place: "panel", target: "classes", title: "How roads are sorted into colours", lines: [
+    "Every road gets a rank from 1 to 10. These three choices change where the line falls "
+      + "between one rank and the next. If you are not sure, leave it on Geometric.",
+  ], items: METHODS.map((m) => ({ label: m.label, text: m.short })) });
+  steps.push({ place: "panel", target: "legend", title: "Hide the lower ranks", lines: [
+    "The colour key shows which colour goes with each rank, with 10 at the top.",
+    "Drag the slider under it to the right to hide the lower ranks. Only the most "
+      + "important roads stay on the map.",
+  ] });
+  steps.push({ place: "panel", target: "map", title: "Change the background", lines: [
+    "Under \"Map\", pick a different background. Esri imagery, for example, shows aerial photos.",
+    "Drag \"Road opacity\" to the left to let more of the background show through the roads.",
+  ] });
+  steps.push({ place: "panel", target: "methodology", title: "Want the details?", lines: [
+    "The link under \"Methodology\" opens a write-up of how these numbers were worked out. "
+      + "It is written for readers who want the technical details.",
+  ] });
+  steps.push({ place: "panel", title: "Now try it yourself", lines: [
+    "Move your mouse over any road to see its numbers. Click a road to keep them on the screen.",
+    tab === "detour"
+      ? "The button with four arrows on the map zooms out to show the whole county."
+      : "Zoom out to see how the pinch points line up across the state. The button with "
+        + "four arrows on the map shows the whole state.",
+    "To see this guide again later, click \"Start the guide\" at the bottom of the map.",
+  ] });
+  return steps;
 }
 
 export function guideSteps(ex: Example, props: Record<string, any> | null,
@@ -80,7 +162,8 @@ export function guideSteps(ex: Example, props: Record<string, any> | null,
   const name = props ? splitNames(props.road_name).primary : ex.road;
   const cls = props ? Number(props[classField]) : NaN;
   const hasClass = isFinite(cls) && cls >= 1 && cls <= 10;
-  const where = `This is ${name} in ${ex.countyLabel} County. It is the road with the glow around it on the map.`;
+  const startHere = `Let's start with one real road: ${name} in ${ex.countyLabel} County, `
+    + "the road with the glow around it.";
 
   if (ex.tab === "detour") {
     const numbers: string[] = [];
@@ -102,32 +185,30 @@ export function guideSteps(ex: Example, props: Record<string, any> | null,
     });
     if (rank) numbers.push(`${rank}.`);
     if (numbers.length === 0) {
-      numbers.push("The box on the map lists how many trips would have to go another way, "
-        + "and how much longer they would take.");
+      numbers.push("Click a road once this guide is closed to see how many trips would have "
+        + "to go another way, and how much longer they would take.");
     }
     numbers.push("A trip is one starting point going to one of those four kinds of place. "
-      + "The box on the map shows these same numbers.");
+      + "Click this road once this guide is closed to see all of its numbers.");
 
     return [
-      { title: "Start with one road", lines: [
-        where,
-        "For every road, this tab asks one question. If this road closed, how much harder "
-          + "would it be to reach a fire station, a medical facility, a school, or a grocery "
-          + "or convenience store?",
+      { place: "road", title: "What this map can help with", lines: [
+        "This map shows what happens when one road closes, and how much harder it becomes "
+          + "to reach a fire station, a medical facility, a school, or a grocery or "
+          + "convenience store.",
+        "It can help you find the roads people depend on most, and see where one closure, "
+          + "from a crash, a flood or road work, would cause the most trouble.",
+        startHere,
       ] },
-      { title: "What the colour and thickness mean", lines: [
+      { place: "road", title: "What the colour and thickness mean", lines: [
         hasClass
           ? `This road is drawn ${drawnAs(cls)}. It ranks ${cls} out of 10, and 10 is the worst road to lose.`
           : "Every road is ranked from 1 to 10, and 10 is the worst road to lose.",
         "Thick orange roads cause the most extra driving when they close. "
           + "Thin blue roads cause very little.",
       ] },
-      { title: "What the numbers say", lines: numbers },
-      { title: "Now try it yourself", lines: [
-        ...TRY_IT,
-        "Use the County box to look at another county, and the Score box to ask a different question.",
-        "The button with four arrows on the map zooms out to show the whole county.",
-      ] },
+      { place: "road", title: "What the numbers say", lines: numbers },
+      ...panelSteps("detour"),
     ];
   }
 
@@ -150,13 +231,15 @@ export function guideSteps(ex: Example, props: Record<string, any> | null,
     + "route. These are estimates based on where buildings are, not traffic counts.");
 
   return [
-    { title: "Start with one road", lines: [
-      where,
-      "This tab covers every road in North Carolina. It asks which roads would hurt the "
+    { place: "road", title: "What this map can help with", lines: [
+      "This map covers every road in North Carolina. It shows which roads would hurt the "
         + "most to lose.",
+      "It can help you find pinch points: busy roads with no easy way around, where one "
+        + "closure would cause the most trouble.",
+      startHere,
     ] },
-    { title: "Two things make a pinch point", lines: ingredients },
-    { title: "What the colour and thickness mean", lines: [
+    { place: "road", title: "Two things make a pinch point", lines: ingredients },
+    { place: "road", title: "What the colour and thickness mean", lines: [
       hasClass
         ? `This road is drawn ${drawnAs(cls)}. It ranks ${cls} out of 10, and 10 is the strongest pinch point.`
         : "Every road is ranked from 1 to 10, and 10 is the strongest pinch point.",
@@ -165,10 +248,6 @@ export function guideSteps(ex: Example, props: Record<string, any> | null,
       "Dead-end streets always rank lowest, because closing one only affects the homes "
         + "and businesses along it.",
     ] },
-    { title: "Now try it yourself", lines: [
-      ...TRY_IT,
-      "Zoom out to see how the pinch points line up across the state. The button with "
-        + "four arrows on the map shows the whole state.",
-    ] },
+    ...panelSteps("pinch"),
   ];
 }

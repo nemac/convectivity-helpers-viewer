@@ -27,19 +27,20 @@ export const METHODS = [
   {
     id: "geometric",
     label: "Geometric",
-    short: "Middle-heavy; very lowest and very highest both get few roads",
+    // Plain words, because the guide reads these out as well as the panel.
+    short: "A good place to start. Most roads land in the middle colours, and only a few at either end.",
     help: "Breaks grow by a constant ratio, so classes get wider toward the top. Most roads gather in the middle colours, and both ends stay sparse: only a handful of roads score low enough for the first class or high enough for the last.",
   },
   {
     id: "log10",
     label: "Log base 10",
-    short: "Only extremes reach the top colors",
+    short: "Only the most extreme roads reach the top colours.",
     help: "Equal breaks on the log of the score. The most selective of the three: use it when a handful of segments dwarf everything else and you want only those to stand out.",
   },
   {
     id: "quantile",
     label: "Quantile",
-    short: "Same number of roads per color",
+    short: "The same number of roads in every colour. It shows order rather than size.",
     help: "Equal counts per class, fitted on the scoring segments only. Shows rank rather than magnitude, so the top class is as common as every other.",
   },
 ] as const;

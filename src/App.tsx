@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useRef, useState } from "react";
 import {
   Box, Divider, Drawer, FormControl, Link, MenuItem, Radio, RadioGroup,
   FormControlLabel, Select, Slider, Stack, Tab, Tabs, Tooltip, Typography,
@@ -6,15 +6,35 @@ import {
 import MapView, { Focus } from "./MapView";
 import MapBoundary from "./MapBoundary";
 import Methodology from "./Methodology";
-import { BULLDOG_BLUE, NIGHT_SKY, ORG_LOGO, ORG_NAME, ORG_URL } from "./brand";
+import { BULLDOG_BLUE, NIGHT_SKY, ORG_LOGO_SCREEN, ORG_NAME, ORG_URL } from "./brand";
 import {
   BASEMAPS, BasemapKey, COUNTIES, DEFAULT_BASEMAP, DEFAULT_COUNTY, DEFAULT_TAB,
   DETOUR_SCORES, METHODOLOGY, METHODS, MethodId, NC_BOUNDS, NC_CENTER, NC_ZOOM,
   PINCH_SCORES, PINCH_TILES, SERVICES, STYLES, Score, TILES_BASE, TabId, classField,
 } from "./config";
-import { EXAMPLES, Example, OPENING_EXAMPLE, classColor, guideSteps } from "./guide";
+import {
+  Example, GuideStep, OPENING_EXAMPLE, PanelTarget, classColor, firstExample, guideSteps, nudge,
+} from "./guide";
 
-const TRY_KEY = "tryExamplesBox";
+// Set once someone has closed the guide that opens on a first visit, so the
+// next visit opens with only the round button. Double-clicking the credits
+// line at the foot of the panel clears it; see resetRemembered below.
+const GUIDE_KEY = "guideClosed";
+const GUIDE_DONE = (() => {
+  try { return window.localStorage.getItem(GUIDE_KEY) === "1"; } catch { return false; }
+})();
+const rememberGuideClosed = () => {
+  try { window.localStorage.setItem(GUIDE_KEY, "1"); } catch { /* not remembered */ }
+};
+// How long the "Start the guide" pill waits under the map before tucking
+// itself into a circle in the corner.
+const PILL_MS = 15000;
+
+// The tabs in the title bar, in order.
+const NAV_TABS: { value: TabId; label: string }[] = [
+  { value: "detour", label: "Detours" },
+  { value: "pinch", label: "Pinch points" },
+];
 const LEFT = 540;
 const MIN_LEFT = 300;
 const MAX_LEFT = 820;
@@ -25,12 +45,35 @@ const DOC_WIDTH = 760;
 // a view, or being sent one, and is left exactly as it was saved. Read once at
 // module load, before the effects below start writing the hash.
 const ARRIVED_COLD = window.location.hash.replace(/^#/, "") === "";
+const OPEN_ON_ARRIVAL = ARRIVED_COLD && !GUIDE_DONE;
 const focusFor = (ex: Example, n: number): Focus =>
   ({ key: `${ex.id}:${n}`, lngLat: ex.lngLat, zoom: ex.zoom, road: ex.road });
+
+// Forget that this browser has closed the guide, then load the plain address,
+// which is exactly what a first visit sees. A hidden way to see the first
+// visit again; nothing on screen points to it. "tryExamplesBox" is the
+// remembered state of a panel box that has since been removed.
+const resetRemembered = () => {
+  try {
+    window.localStorage.removeItem(GUIDE_KEY);
+    window.localStorage.removeItem("tryExamplesBox");
+  } catch { /* nothing stored */ }
+  window.history.replaceState(null, "", window.location.pathname + window.location.search);
+  window.location.reload();
+};
 
 // The panel settings live in the URL hash, so a link reopens the same view.
 const urlState = new URLSearchParams(window.location.hash.replace(/^#/, ""));
 const fromUrl = (key: string, fallback: string) => urlState.get(key) ?? fallback;
+
+// The two choices on the detour tab, the county and what the map shows, share
+// one solid Bulldog Blue look, so both read as the controls that change the
+// map. The score picker in plain white was easy to miss among the cards.
+const PICKER_SX = {
+  bgcolor: BULLDOG_BLUE, color: "#fff",
+  "& fieldset, &:hover fieldset, &.Mui-focused fieldset": { borderColor: BULLDOG_BLUE },
+  "& .MuiSvgIcon-root": { color: "#fff" },
+};
 
 export default function App() {
   const [tab, setTab] = useState<TabId>(
@@ -61,30 +104,48 @@ export default function App() {
   // has to fly anyway, and that would not change the key by itself.
   const [flyNonce, setFlyNonce] = useState(0);
 
-  // The guided example on screen, if any: which road, which step, and that
-  // road's numbers once the map has read them from the tiles.
-  const [guide, setGuide] = useState<{ ex: Example; step: number } | null>(
-    ARRIVED_COLD ? { ex: OPENING_EXAMPLE, step: 0 } : null);
+  // The guide on screen, if any: which road, which step, and that road's
+  // numbers once the map has read them from the tiles. It sits in a dark popup
+  // on the road itself. A first visit opens it, and so does the round "Start
+  // the guide" button. `nudged` marks the step reached by the first click away
+  // from the popup, which carries a friendly line on top.
+  const [guide, setGuide] = useState<{ ex: Example; step: number; nudged: boolean } | null>(
+    OPEN_ON_ARRIVAL ? { ex: OPENING_EXAMPLE, step: 0, nudged: false } : null);
   const [focus, setFocus] = useState<Focus | null>(
-    ARRIVED_COLD ? focusFor(OPENING_EXAMPLE, 0) : null);
+    OPEN_ON_ARRIVAL ? focusFor(OPENING_EXAMPLE, 0) : null);
   const [guideProps, setGuideProps] = useState<Record<string, any> | null>(null);
   // Whether the reader has hovered or clicked a road yet. Until then, and
   // while no example is running, the map carries a one-line hint.
   const [touched, setTouched] = useState(false);
+  // The way back into the guide when it is closed: a pill under the map just
+  // after closing, which tucks into a circle in the corner after a while.
+  const [launcher, setLauncher] = useState<"pill" | "circle">("circle");
+  // The first click away from the popup guide is answered with a nudge and
+  // the next step, once per page load. Every click after that is let through.
+  const nudgeUsed = useRef(false);
+  // Whether the guide now running has been on screen. Its popup only opens
+  // once the road's tiles are drawn, which can take a few seconds, and a guide
+  // closed before then (say by switching tabs) was never seen, so it is not
+  // remembered as closed.
+  const guideSeen = useRef(false);
 
-  const endGuide = () => { setGuide(null); setFocus(null); };
+  // Closing the guide by any route (its close button, Done, a second click
+  // away, or a change in the panel) is remembered, and leaves the pill.
+  const endGuide = () => {
+    if (guide && guideSeen.current) {
+      rememberGuideClosed();
+      setLauncher("pill");
+    }
+    guideSeen.current = false;
+    setGuide(null);
+    setFocus(null);
+  };
 
-  // Whether the "Try an example" box is open. Remembered in this browser so
-  // that someone who has tucked it away does not have to do so on every visit.
-  // Storage can be unavailable (private windows, blocked site data), in which
-  // case the box simply starts open each time.
-  const [tryOpen, setTryOpen] = useState(() => {
-    try { return window.localStorage.getItem(TRY_KEY) !== "closed"; } catch { return true; }
-  });
-  const toggleTry = () => setTryOpen((open) => {
-    try { window.localStorage.setItem(TRY_KEY, open ? "closed" : "open"); } catch { /* not remembered */ }
-    return !open;
-  });
+  React.useEffect(() => {
+    if (guide || launcher !== "pill") return;
+    const t = window.setTimeout(() => setLauncher("circle"), PILL_MS);
+    return () => window.clearTimeout(t);
+  }, [guide, launcher]);
 
   // Put the panel into the state the example is written for, then send the
   // map to the road. The steps quote ranks out of 10 on the first score and
@@ -96,7 +157,7 @@ export default function App() {
     if (ex.tab === "detour") setDetourScore(DETOUR_SCORES[0].base);
     setMinClass(1);
     setGuideProps(null);
-    setGuide({ ex, step: 0 });
+    setGuide({ ex, step: 0, nudged: false });
     setFocus((f) => focusFor(ex, f ? Number(f.key.split(":")[1]) + 1 : 1));
   };
 
@@ -107,13 +168,96 @@ export default function App() {
   const field = classField(score.base, method);
   const classes = STYLES[field]?.classes ?? [];
   const countyObj = COUNTIES.find((c) => c.id === county)!;
+  const steps = guide ? guideSteps(guide.ex, guideProps, field) : [];
+  const step = guide ? steps[Math.min(guide.step, steps.length - 1)] : null;
+  // The guide's first steps sit in the popup on the road; the rest point at
+  // the panel from a card on the map's left edge.
+  const onPanelStep = step?.place === "panel";
+  const panelTarget = onPanelStep ? step?.target ?? null : null;
+
+  // A click on the map while the guide is open. The first one, if there is a
+  // next step to show, is kept: the guide says so and moves on.
+  const onGuideAway = () => {
+    if (!guide || nudgeUsed.current || guide.step >= steps.length - 1) return false;
+    nudgeUsed.current = true;
+    setGuide({ ...guide, step: guide.step + 1, nudged: true });
+    return true;
+  };
+
+  // Move the guide to step n. Going back from the panel steps to the road
+  // steps puts the panel back the way the road steps describe it, since the
+  // reader may have changed the county or the score in between, and sends the
+  // map back to the road to reopen its popup there.
+  const goToStep = (n: number) => {
+    if (!guide) return;
+    if (steps[n]?.place === "road" && step?.place === "panel") {
+      setCounty(guide.ex.county);
+      setMethod("geometric");
+      if (guide.ex.tab === "detour") setDetourScore(DETOUR_SCORES[0].base);
+      setFocus((f) => focusFor(guide.ex, f ? Number(f.key.split(":")[1]) + 1 : 1));
+    }
+    setGuide({ ...guide, step: n, nudged: false });
+  };
+
+  // A change in the panel. During the road steps it would leave the popup
+  // quoting the old settings, so it ends the guide. During the steps about
+  // the panel, trying the controls is the point, so the guide stays.
+  const panelChanged = () => { if (!onPanelStep) endGuide(); };
 
   // Go to a study area and make sure the map actually moves there.
   const goToCounty = (id: string) => {
-    endGuide();
+    panelChanged();
     setCounty(id);
     setFlyNonce((n) => n + 1);
   };
+
+  // Where the guide's card sits on the map during the panel steps: level with
+  // the card it is pointing at, kept inside the map, with its arrow on that
+  // card. `room` caps the guide's height to the map's, so a long step scrolls
+  // inside the card and its Back and Next row stays on screen. Measured again
+  // as the panel scrolls, the window resizes, the guide's own height changes
+  // from step to step, or anything in the panel changes size (dragging the
+  // panel's edge, or a card above the target growing when the score changes).
+  const panelRef = useRef<HTMLDivElement>(null);
+  const mapAreaRef = useRef<HTMLDivElement>(null);
+  const coachRef = useRef<HTMLDivElement>(null);
+  const [coach, setCoach] = useState<{ top: number; arrow: number | null; room: number }>(
+    { top: 16, arrow: null, room: 600 });
+  React.useLayoutEffect(() => {
+    if (!onPanelStep) return;
+    const panel = panelRef.current;
+    const target = panelTarget
+      ? panel?.querySelector<HTMLElement>(`[data-guide="${panelTarget}"]`) ?? null : null;
+    target?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    const place = () => {
+      const area = mapAreaRef.current?.getBoundingClientRect();
+      if (!area) return;
+      // 12 px clear of the map's top and bottom, less the card's padding
+      const room = Math.max(180, area.height - 24 - 26);
+      if (!target) { setCoach({ top: 16, arrow: null, room }); return; }
+      const h = coachRef.current?.offsetHeight ?? 300;
+      const t = target.getBoundingClientRect();
+      // Aim at the card's heading and first control rather than its middle,
+      // since some cards (the colour key) are tall.
+      const aim = t.top + Math.min(t.height / 2, 32) - area.top;
+      const top = Math.max(12, Math.min(aim - 34, area.height - h - 12));
+      setCoach({ top, arrow: Math.max(18, Math.min(aim - top, h - 18)), room });
+    };
+    place();
+    panel?.addEventListener("scroll", place, { passive: true });
+    window.addEventListener("resize", place);
+    const seen = new ResizeObserver(place);
+    if (coachRef.current) seen.observe(coachRef.current);
+    if (panel) {
+      seen.observe(panel);
+      Array.from(panel.children).forEach((c) => seen.observe(c));
+    }
+    return () => {
+      panel?.removeEventListener("scroll", place);
+      window.removeEventListener("resize", place);
+      seen.disconnect();
+    };
+  }, [onPanelStep, panelTarget]);
 
   const tilesUrl = new URL(tab === "pinch" ? PINCH_TILES : countyObj.tiles, TILES_BASE).href;
   const sourceLayer = tab === "pinch" ? "pinch" : "detour";
@@ -148,32 +292,104 @@ export default function App() {
       {/* Title bar across the full width, above both the panel and the map.
           The wordmark is white on transparent, so it needs the dark Night Sky
           behind it to read at all. */}
+      {/* On narrow screens the bar wraps, putting the tabs on a second row
+          rather than letting the title run into them or the tabs run off the
+          right edge. */}
       <Box component="header" sx={{
         bgcolor: NIGHT_SKY, display: "flex", alignItems: "center", gap: 2.5,
+        flexWrap: { xs: "wrap", md: "nowrap" }, rowGap: 1,
         px: 2.5, py: 1.25, flexShrink: 0,
       }}>
         <Link href={ORG_URL} target="_blank" rel="noopener"
           sx={{ display: "block", lineHeight: 0, flexShrink: 0 }}>
-          <Box component="img" src={new URL(ORG_LOGO, document.baseURI).href}
+          <Box component="img" src={new URL(ORG_LOGO_SCREEN, document.baseURI).href}
             alt={ORG_NAME}
-            sx={{ width: 360, height: "auto", display: "block" }} />
+            // Sized by a whole-pixel height rather than a width: the logo's
+            // fine small capitals and hairline divider look soft when its
+            // edges land between screen pixels.
+            sx={{ height: { xs: 46, md: 60 }, width: "auto", display: "block" }} />
         </Link>
         <Box sx={{ width: "1px", alignSelf: "stretch", bgcolor: "rgba(255,255,255,0.25)" }} />
-        <Box sx={{ minWidth: 0 }}>
-          <Typography sx={{ color: "#fff", fontWeight: 700, fontSize: 19, lineHeight: 1.25 }}>
+        {/* Wide screens squeeze the centre's name on the right rather than
+            the title, which would otherwise wrap a word to a line. On narrow
+            ones the title takes a fixed 150 px (two lines), which is what
+            decides when the tabs drop to a second row. */}
+        <Box sx={{
+          minWidth: 0, flexShrink: { xs: 0, md: 1, lg: 0 }, flexBasis: { xs: 150, md: "auto" },
+        }}>
+          {/* Whole-pixel line heights keep the title bar an even number of
+              pixels tall however the title wraps, so the centred logo lands
+              on whole pixels and stays sharp. */}
+          <Typography sx={{ color: "#fff", fontWeight: 700, fontSize: 19, lineHeight: "24px" }}>
             Road network connectivity
           </Typography>
-          <Typography sx={{ color: "rgba(255,255,255,0.78)", fontSize: 13 }}>
+          <Typography sx={{ color: "rgba(255,255,255,0.78)", fontSize: 13, lineHeight: "20px" }}>
             North Carolina
           </Typography>
         </Box>
+
+        {/* The tabs, set as pill-shaped links in the title bar. The open one
+            is a solid light pill with Night Sky text. Every other one is an
+            outlined pill on a muted tint of the bar, with a small arrow saying
+            it goes somewhere; a muted pill alone did not read as clickable.
+            The arrow nudges right on hover. Each pill keeps the same 1.5 px
+            border, white on the open one, so switching does not shift the
+            row's height. Still MUI Tabs underneath, so the arrow keys and
+            screen readers treat them as tabs. A third tab is one more entry
+            in NAV_TABS. */}
+        <Tabs
+          value={tab}
+          onChange={(_, v) => { endGuide(); setTab(v); }}
+          sx={{
+            ml: 1.5, minHeight: 0, flexShrink: 0,
+            "& .MuiTabs-flexContainer": { gap: 1.5 },
+            "& .MuiTabs-indicator": { display: "none" },
+            "& .MuiTab-root": {
+              textTransform: "none", fontWeight: 600, fontSize: 15,
+              minHeight: 0, minWidth: 0, px: 2, py: 0.75, borderRadius: 999,
+              flexDirection: "row", gap: 0.5,
+              color: "rgba(255,255,255,0.92)", bgcolor: "rgba(255,255,255,0.1)",
+              border: "1.5px solid rgba(255,255,255,0.45)",
+              transition: "color 140ms, background-color 140ms, border-color 140ms",
+              "& .tab-arrow": { transition: "transform 140ms" },
+              "&:hover": {
+                color: "#fff", bgcolor: "rgba(255,255,255,0.2)", borderColor: "rgba(255,255,255,0.85)",
+                "& .tab-arrow": { transform: "translateX(2px)" },
+              },
+            },
+            "& .MuiTab-root.Mui-selected": {
+              color: NIGHT_SKY, bgcolor: "#fff", borderColor: "#fff",
+              "&:hover": { bgcolor: "#fff" },
+            },
+            "& .MuiTab-root.Mui-focusVisible": { outline: "2px solid #fff", outlineOffset: 2 },
+          }}
+        >
+          {NAV_TABS.map((t) => (
+            <Tab key={t.value} value={t.value} label={
+              <>
+                {t.label}
+                {/* a chevron drawn as an SVG, since Figtree has no arrow glyphs */}
+                {t.value !== tab && (
+                  <Box component="svg" className="tab-arrow" viewBox="0 0 24 24" aria-hidden="true" sx={{
+                    width: 16, height: 16, fill: "none", stroke: "currentColor",
+                    strokeWidth: 2.6, strokeLinecap: "round", strokeLinejoin: "round", flexShrink: 0,
+                  }}>
+                    <path d="M9 6l6 6-6 6" />
+                  </Box>
+                )}
+              </>
+            } />
+          ))}
+        </Tabs>
+
         <Box sx={{ flex: 1 }} />
         {/* Set in full white rather than a dim tint: at this size a faded grey
-            on navy is the first thing to become unreadable. */}
+            on navy is the first thing to become unreadable. Shown only where
+            there is room beside the tabs. */}
         <Typography sx={{
           color: "rgba(255,255,255,0.92)", fontSize: 13.5, fontWeight: 500,
-          textAlign: "right", maxWidth: 300, lineHeight: 1.4,
-          display: { xs: "none", md: "block" },
+          textAlign: "right", maxWidth: 300, minWidth: 0, lineHeight: 1.4,
+          display: { xs: "none", lg: "block" },
         }}>
           {ORG_NAME}
         </Typography>
@@ -194,56 +410,7 @@ export default function App() {
           zIndex: 2, "&:hover": { bgcolor: "rgba(0,0,0,0.08)" },
         }} />
 
-        {/* A segmented control rather than MUI's default tabs. The default is a
-            flat label with a hairline underline, which on a panel this busy
-            does not read as something to click. The sunken track with one
-            raised segment is a familiar switch, so it reads as interactive
-            without a heavy block of colour shouting over the panel. */}
-        <Box sx={{ px: 2, pt: 1.75, pb: 1.5 }}>
-          <Tabs
-            value={tab}
-            onChange={(_, v) => { endGuide(); setTab(v); }}
-            variant="fullWidth"
-            sx={{
-              minHeight: 0,
-              bgcolor: "#e7eaee",
-              borderRadius: 2,
-              p: "4px",
-              "& .MuiTabs-indicator": { display: "none" },
-              "& .MuiTabs-flexContainer": { gap: "4px" },
-              "& .MuiTab-root": {
-                textTransform: "none",
-                fontWeight: 600,
-                fontSize: 14,
-                minHeight: 0,
-                py: 1,
-                borderRadius: 1.5,
-                color: "#5a6672",
-                transition: "background-color 140ms, color 140ms",
-                "&:hover": { bgcolor: "rgba(255,255,255,0.6)", color: BULLDOG_BLUE },
-              },
-              "& .Mui-selected": {
-                bgcolor: "#fff",
-                color: `${BULLDOG_BLUE} !important`,
-                boxShadow: "0 1px 2px rgba(16,24,40,0.16)",
-                "&:hover": { bgcolor: "#fff" },
-              },
-            }}
-          >
-            <Tab label="Detours" value="detour" />
-            <Tab label="Pinch points" value="pinch" />
-          </Tabs>
-        </Box>
-
-        <Box sx={{ p: 2, overflowY: "auto", flex: 1 }}>
-          {guide && (
-            <Guide ex={guide.ex} step={guide.step}
-              steps={guideSteps(guide.ex, guideProps, field)}
-              color={classColor(field, guideProps)}
-              onStep={(n) => setGuide({ ex: guide.ex, step: n })}
-              onEnd={endGuide} />
-          )}
-
+        <Box ref={panelRef} sx={{ p: 2, overflowY: "auto", flex: 1 }}>
           {tab === "pinch" ? (
             <Typography variant="body2" color="text.secondary">
               Every road segment in the state, scored by how much traffic depends on it and
@@ -256,53 +423,40 @@ export default function App() {
             </Typography>
           )}
 
-          {/* Offered whenever no example is running, so there is always a way
-              back into one. */}
-          {!guide && (
-            <TryExamples open={tryOpen} onToggle={toggleTry}
-              examples={EXAMPLES.filter((e) => e.tab === tab)} onPick={startExample} />
-          )}
+          {/* The same box on both tabs, first: the name of what the colours
+              measure and a sentence or two on what it means. On the detour
+              tab the two lists that change it follow. */}
+          <Card title="What the map shows" guide="shows" lit={panelTarget === "shows"}>
+            <Typography variant="body2" sx={{ fontWeight: 600 }}>{score.label}</Typography>
+            <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
+              {score.help}
+            </Typography>
+          </Card>
 
           {tab === "detour" && (
-            <Card title="County">
+            <Card title="Choose a county" guide="county" lit={panelTarget === "county"}>
               <Select fullWidth size="small" value={county}
-                onChange={(e) => { endGuide(); setCounty(e.target.value); }}
-                sx={{
-                  bgcolor: BULLDOG_BLUE, color: "#fff",
-                  "& fieldset, &:hover fieldset, &.Mui-focused fieldset": { borderColor: BULLDOG_BLUE },
-                  "& .MuiSvgIcon-root": { color: "#fff" },
-                }}>
+                onChange={(e) => { panelChanged(); setCounty(e.target.value); }}
+                sx={PICKER_SX}>
                 {COUNTIES.map((c) => <MenuItem key={c.id} value={c.id}>{c.label}</MenuItem>)}
               </Select>
             </Card>
           )}
 
           {tab === "detour" && (
-            <Card title="Score">
+            <Card title="Choose what the map shows" guide="score" lit={panelTarget === "score"}>
               <FormControl fullWidth>
-                <Select size="small" value={detourScore}
-                  onChange={(e) => { endGuide(); setDetourScore(e.target.value); }}>
+                <Select size="small" value={detourScore} sx={PICKER_SX}
+                  onChange={(e) => { panelChanged(); setDetourScore(e.target.value); }}>
                   {DETOUR_SCORES.map((s) => <MenuItem key={s.base} value={s.base}>{s.label}</MenuItem>)}
                 </Select>
               </FormControl>
-              <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
-                {score.help}
-              </Typography>
             </Card>
           )}
 
-          {tab === "pinch" && (
-            <Card title="Score">
-              <Typography variant="body2" sx={{ fontWeight: 600 }}>{score.label}</Typography>
-              <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
-                {score.help}
-              </Typography>
-            </Card>
-          )}
-
-          <Card title="Classification">
+          <Card title="Classification" guide="classes" lit={panelTarget === "classes"}>
             <RadioGroup value={method}
-              onChange={(e) => { endGuide(); setMethod(e.target.value as MethodId); }}>
+              onChange={(e) => { panelChanged(); setMethod(e.target.value as MethodId); }}>
               {METHODS.map((m) => (
                 <Tooltip key={m.id} title={m.help} placement="right" arrow>
                   <FormControlLabel value={m.id} control={<Radio size="small" sx={{ alignSelf: "flex-start", pt: 0.5 }} />}
@@ -321,7 +475,7 @@ export default function App() {
             </Typography>
           </Card>
 
-          <Card title="Legend">
+          <Card title="Legend" guide="legend" lit={panelTarget === "legend"}>
             <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
               {score.label}, {METHODS.find((m) => m.id === method)?.label.toLowerCase()} breaks.
             </Typography>
@@ -340,19 +494,19 @@ export default function App() {
                 swatches above so the two read as separate things */}
             <Box sx={{ mt: 3.5 }}>
               <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.5 }}>
-                Drag to hide the lower classes.
+                Drag to the right to hide the lower ranks.
               </Typography>
               <Box sx={{ px: 0.5 }}>
                 <Slider size="small" min={1} max={10} step={1} marks value={minClass}
                   onChange={(_, v) => setMinClass(v as number)}
                   valueLabelDisplay="auto"
-                  valueLabelFormat={(v) => (v === 1 ? "all classes" : `class ${v} and up`)}
+                  valueLabelFormat={(v) => (v === 1 ? "all ranks" : `rank ${v} and up`)}
                   sx={{ color: BULLDOG_BLUE }} />
               </Box>
             </Box>
           </Card>
 
-          <Card title="Map">
+          <Card title="Map" guide="map" lit={panelTarget === "map"}>
             <Typography variant="caption" color="text.secondary">Basemap</Typography>
             <Select fullWidth size="small" value={basemap} sx={{ mt: 0.5, mb: 1.5 }}
               onChange={(e) => setBasemap(e.target.value as BasemapKey)}>
@@ -371,7 +525,7 @@ export default function App() {
 
           {/* left off entirely on a tab whose note is not written yet */}
           {METHODOLOGY[tab].length > 0 && (
-            <Card title="Methodology">
+            <Card title="Methodology" guide="methodology" lit={panelTarget === "methodology"}>
               <Stack spacing={0.75}>
                 {METHODOLOGY[tab].map((d) => (
                   <Link key={d.file} component="button" underline="hover" sx={{ textAlign: "left", color: BULLDOG_BLUE }}
@@ -386,14 +540,19 @@ export default function App() {
             </Card>
           )}
 
-          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 2 }}>
+          {/* Double-clicking this line is a hidden reset: see resetRemembered. */}
+          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 2 }}
+            onDoubleClick={resetRemembered}>
             Symbology from {STYLES[field]?.source ?? "the QGIS styles"} in output/.
             Roads: Overture Maps Foundation.
           </Typography>
         </Box>
       </Drawer>
 
-      <Box sx={{ position: "relative", flex: 1 }}>
+      {/* Clipped to its own edges, so on a narrow window, where the panel
+          leaves the map only a sliver, nothing on the map pushes the page
+          into scrolling sideways. */}
+      <Box ref={mapAreaRef} sx={{ position: "relative", flex: 1, minWidth: 0, overflow: "hidden" }}>
         <MapBoundary>
           <MapView
             onEmptyChange={setMapEmpty}
@@ -411,20 +570,66 @@ export default function App() {
             fullBounds={tab === "pinch" ? NC_BOUNDS : countyObj.bounds}
             fullLabel={tab === "pinch" ? "Show the whole state" : `Show all of ${countyObj.label} County`}
             focus={focus}
-            onFocusFeature={(key, props) => { if (key === focus?.key) setGuideProps(props); }}
+            onFocusFeature={(key, props) => {
+              // called once the guide's popup is on the road, found or not
+              if (key !== focus?.key) return;
+              guideSeen.current = true;
+              setGuideProps(props);
+            }}
             onInteract={() => setTouched(true)}
+            guide={guide && !onPanelStep ? (
+              <MapGuide ex={guide.ex} step={guide.step} steps={steps}
+                color={classColor(field, guideProps)} nudged={guide.nudged}
+                onStep={goToStep} onEnd={endGuide} />
+            ) : null}
+            onGuideAway={onGuideAway}
+            onGuideClosed={endGuide}
           />
         </MapBoundary>
 
+        {/* The guide during the steps about the panel: a dark card on the
+            map's left edge, its arrow on the panel card being described. */}
+        {guide && onPanelStep && (
+          <Box ref={coachRef} className="guide-card"
+            style={{ ["--guide-room" as string]: `${coach.room}px` }}
+            sx={{
+            position: "absolute", left: 16, top: coach.top, zIndex: 6,
+            bgcolor: NIGHT_SKY, color: "#fff", borderRadius: "12px", p: "14px 16px 12px",
+            boxShadow: "0 12px 32px rgba(0,20,45,0.38)", transition: "top 250ms ease",
+          }}>
+            {coach.arrow != null && (
+              <Box aria-hidden="true" sx={{
+                position: "absolute", left: -10, top: coach.arrow - 10, width: 0, height: 0,
+                borderTop: "10px solid transparent", borderBottom: "10px solid transparent",
+                borderRight: `10px solid ${NIGHT_SKY}`, transition: "top 250ms ease",
+              }} />
+            )}
+            <MapGuide ex={guide.ex} step={guide.step} steps={steps}
+              color={null} nudged={guide.nudged}
+              onStep={goToStep} onEnd={endGuide} />
+          </Box>
+        )}
+
+        {!guide && (
+          <GuideLauncher shape={launcher} onStart={() => startExample(firstExample(tab))} />
+        )}
+
         {/* One line on what to do, for someone who arrived by a link or left
             the example. It goes away for good the first time a road is hovered
-            or clicked, and never takes clicks away from the map. */}
+            or clicked, and never takes clicks away from the map. It sits above
+            the "Start the guide" pill while that is showing, and once the
+            pill has become the circle in the corner, it is centred in the
+            space to the circle's right so it never covers it. */}
         {!guide && !touched && !(tab === "detour" && mapEmpty) && (
           <Box sx={{
-            position: "absolute", bottom: 34, left: "50%", transform: "translateX(-50%)",
+            position: "absolute", bottom: launcher === "pill" ? 34 + LAUNCHER_SIZE + 12 : 34,
+            left: launcher === "pill" ? "50%" : `calc(50% + ${(12 + LAUNCHER_SIZE) / 2}px)`,
+            transform: "translateX(-50%)", transition: "bottom 400ms, left 400ms",
             bgcolor: "rgba(16,23,31,0.86)", color: "#fff", borderRadius: 999,
             px: 2, py: 0.9, fontSize: 13.5, fontWeight: 500, zIndex: 4,
-            pointerEvents: "none", whiteSpace: "nowrap", maxWidth: "calc(100% - 24px)",
+            pointerEvents: "none", whiteSpace: "nowrap",
+            maxWidth: launcher === "pill"
+              ? "calc(100% - 24px)" : `calc(100% - ${2 * (12 + LAUNCHER_SIZE + 12)}px)`,
             overflow: "hidden", textOverflow: "ellipsis",
           }}>
             Move your mouse over a road to see its numbers. Click to keep them open.
@@ -473,129 +678,166 @@ export default function App() {
   );
 }
 
-// The way into the guided examples. It is set on Night Sky, the darker of the
-// two UNC Asheville colours in brand.ts, so it stands apart from the white
-// settings cards below it, and it folds down to its title for anyone who does
-// not want it.
-function TryExamples({ open, onToggle, examples, onPick }: {
-  open: boolean;
-  onToggle: () => void;
-  examples: Example[];
-  onPick: (e: Example) => void;
-}) {
+const LAUNCHER_SIZE = 46;
+const LAUNCHER_WIDE = 184;
+
+// The way back into the guide. Right after the guide closes it is a pill
+// under the middle of the map, where the eye already is. After PILL_MS it
+// slides to the bottom left corner as a circle with a question mark, and
+// widens back into the labelled pill under the mouse or keyboard focus.
+// Night Sky with a white rim, so it holds up on the dark basemap too.
+function GuideLauncher({ shape, onStart }: { shape: "pill" | "circle"; onStart: () => void }) {
+  const circle = shape === "circle";
   return (
-    <Box sx={{ borderRadius: 1.5, bgcolor: NIGHT_SKY, color: "#fff", mt: 2, overflow: "hidden" }}>
-      <Box component="button" onClick={onToggle} aria-expanded={open}
-        title={open ? "Minimize" : "Show the examples"}
-        sx={{
-          font: "inherit", color: "inherit", bgcolor: "transparent", border: "none",
-          cursor: "pointer", width: "100%", textAlign: "left",
-          display: "flex", alignItems: "center", justifyContent: "space-between",
-          px: 2, py: 1.25, "&:hover": { bgcolor: "rgba(255,255,255,0.08)" },
-        }}>
-        <Typography sx={{ fontWeight: 700, fontSize: 15 }}>
-          New here? Try an example
-        </Typography>
-        {/* a chevron drawn as an SVG, since Figtree has no arrow glyphs */}
-        <Box component="svg" viewBox="0 0 24 24" aria-hidden="true" sx={{
-          width: 20, height: 20, flexShrink: 0, fill: "none", stroke: "#fff",
-          strokeWidth: 2.4, strokeLinecap: "round", strokeLinejoin: "round",
-          transform: open ? "rotate(180deg)" : "none", transition: "transform 140ms",
-        }}>
-          <path d="M6 9l6 6 6-6" />
-        </Box>
+    <Box component="button" type="button" onClick={onStart} aria-label="Start the guide"
+      sx={{
+        position: "absolute", zIndex: 5,
+        bottom: circle ? 40 : 34,
+        left: circle ? "12px" : "50%",
+        transform: circle ? "translateX(0)" : "translateX(-50%)",
+        width: circle ? LAUNCHER_SIZE : LAUNCHER_WIDE, height: LAUNCHER_SIZE,
+        display: "flex", alignItems: "center", gap: 1, pl: "10px", pr: 0,
+        overflow: "hidden", whiteSpace: "nowrap", cursor: "pointer",
+        font: "inherit", fontWeight: 700, fontSize: 15, color: "#fff",
+        bgcolor: NIGHT_SKY, border: "2px solid #fff", borderRadius: 999,
+        boxShadow: "0 4px 14px rgba(0,20,45,0.35)",
+        transition: "left 700ms ease, bottom 700ms ease, transform 700ms ease, "
+          + "width 250ms ease, background-color 140ms",
+        "& .launcher-label": { opacity: circle ? 0 : 1, transition: "opacity 200ms" },
+        "&:hover, &:focus-visible": {
+          width: LAUNCHER_WIDE, bgcolor: BULLDOG_BLUE,
+          "& .launcher-label": { opacity: 1 },
+        },
+        "&:focus-visible": { outline: `3px solid ${BULLDOG_BLUE}`, outlineOffset: 2 },
+      }}>
+      {/* a question mark drawn as an SVG, so it does not depend on the font */}
+      <Box component="svg" viewBox="0 0 24 24" aria-hidden="true" sx={{
+        width: 22, height: 22, flexShrink: 0, fill: "none", stroke: "#fff",
+        strokeWidth: 2.6, strokeLinecap: "round", strokeLinejoin: "round",
+      }}>
+        <path d="M8.6 8.6a3.5 3.5 0 0 1 6.8 1.2c0 2.3-3.4 3.2-3.4 3.2" />
+        <path d="M12 18h.01" />
       </Box>
-      {open && (
-        <Box sx={{ px: 2, pb: 1.75 }}>
-          <Typography sx={{ fontSize: 13, color: "rgba(255,255,255,0.88)", mb: 1.25 }}>
-            Pick a road for a short walk through what the map is saying about it.
-          </Typography>
-          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-            {examples.map((e) => (
-              <Box key={e.id} component="button" onClick={() => onPick(e)}
-                sx={{
-                  font: "inherit", fontWeight: 600, fontSize: 13, cursor: "pointer",
-                  px: 1.5, py: 0.75, borderRadius: 1.5, textAlign: "left",
-                  color: NIGHT_SKY, bgcolor: "#fff", border: "1px solid #fff",
-                  "&:hover": { bgcolor: "#dbe7fb" },
-                }}>
-                {e.countyLabel}: {e.road}
-              </Box>
-            ))}
-          </Stack>
-        </Box>
-      )}
+      <span className="launcher-label">Start the guide</span>
     </Box>
   );
 }
 
-// The guided example: a few short steps beside the map, about the road the map
-// has opened. It lives in the panel rather than over the map so it never
-// covers the road or its popup, and it is not a dialog: everything else on the
-// page keeps working while it is up, and one click on Skip removes it.
-function Guide({ ex, step, steps, color, onStep, onEnd }: {
+// The guide's content: in the map's popup on the road for the road steps, and
+// in the card on the map's left edge for the steps about the panel. Dark, in
+// Night Sky, so it reads as the site talking rather than as a road's numbers.
+// It draws its own close button; see pin() in MapView for why the popup's own
+// is turned off.
+function MapGuide({ ex, step, steps, color, nudged, onStep, onEnd }: {
   ex: Example;
   step: number;
-  steps: { title: string; lines: string[] }[];
+  steps: GuideStep[];
   color: string | null;
+  nudged: boolean;
   onStep: (n: number) => void;
   onEnd: () => void;
 }) {
   const last = step >= steps.length - 1;
   const s = steps[Math.min(step, steps.length - 1)];
   const button = {
-    font: "inherit", fontWeight: 600, fontSize: 13.5, cursor: "pointer",
-    px: 1.75, py: 0.7, borderRadius: 1.5,
+    font: "inherit", fontWeight: 700, fontSize: 13.5, cursor: "pointer",
+    px: 1.75, py: 0.7, borderRadius: 999, border: "1.5px solid #fff",
   } as const;
+  // --guide-room is the height there is to fill: the room above the road in
+  // the popup (set by MapView) or the map's height in the card. The heading
+  // and the Back and Next row always show; a step too long for the room
+  // scrolls between them.
   return (
-    <Box sx={{
-      border: `1px solid ${BULLDOG_BLUE}`, borderLeft: `5px solid ${BULLDOG_BLUE}`,
-      borderRadius: 1.5, bgcolor: "#f1f6ff", px: 2, py: 1.5, mb: 2,
+    <Box aria-live="polite" sx={{
+      width: 340, maxWidth: "100%", color: "#fff",
+      display: "flex", flexDirection: "column", maxHeight: "var(--guide-room, none)",
     }}>
-      <Stack direction="row" alignItems="center" justifyContent="space-between">
+      <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ flexShrink: 0 }}>
         <Typography sx={{
-          fontSize: 11.5, fontWeight: 700, letterSpacing: "0.05em",
-          textTransform: "uppercase", color: BULLDOG_BLUE,
+          fontSize: 11.5, fontWeight: 700, letterSpacing: "0.06em",
+          textTransform: "uppercase", color: "rgba(255,255,255,0.72)",
         }}>
-          Guided example, step {step + 1} of {steps.length}
+          Quick guide, step {step + 1} of {steps.length}
         </Typography>
-        <Box component="button" onClick={onEnd} sx={{
-          ...button, px: 1, py: 0.25, fontSize: 13, color: "#44505c",
-          bgcolor: "transparent", border: "none", textDecoration: "underline",
-          "&:hover": { color: "#10171f" },
-        }}>
-          Skip
+        {/* an X drawn as an SVG, since Figtree has no glyph for it */}
+        <Box component="button" type="button" onClick={onEnd} aria-label="Close the guide"
+          title="Close the guide"
+          sx={{
+            width: 28, height: 28, mr: -0.75, p: 0, border: "none", borderRadius: 999,
+            bgcolor: "transparent", cursor: "pointer", display: "flex",
+            alignItems: "center", justifyContent: "center",
+            "&:hover": { bgcolor: "rgba(255,255,255,0.15)" },
+          }}>
+          <Box component="svg" viewBox="0 0 24 24" aria-hidden="true" sx={{
+            width: 18, height: 18, fill: "none", stroke: "#fff",
+            strokeWidth: 2.4, strokeLinecap: "round",
+          }}>
+            <path d="M6 6l12 12M18 6L6 18" />
+          </Box>
         </Box>
       </Stack>
 
-      <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 0.75 }}>
-        {color && <Box sx={{ width: 22, height: 5, borderRadius: "2px", bgcolor: color, flexShrink: 0 }} />}
-        <Typography sx={{ fontSize: 12.5, color: "#44505c" }}>
-          {ex.road}, {ex.countyLabel} County
-        </Typography>
-      </Stack>
+      {/* the road's name, only while the steps are about the road */}
+      {s.place === "road" && (
+        <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 0.5, flexShrink: 0 }}>
+          {color && <Box sx={{ width: 22, height: 5, borderRadius: "2px", bgcolor: color, flexShrink: 0 }} />}
+          <Typography sx={{ fontSize: 12.5, color: "rgba(255,255,255,0.82)" }}>
+            {ex.road}, {ex.countyLabel} County
+          </Typography>
+        </Stack>
+      )}
 
-      <Typography sx={{ fontWeight: 700, fontSize: 16, mt: 1, mb: 0.75, lineHeight: 1.3 }}>
-        {s.title}
-      </Typography>
-      {s.lines.map((l) => (
-        <Typography key={l} sx={{ fontSize: 14, lineHeight: 1.55, mb: 0.9, color: "#1c2530" }}>
-          {l}
-        </Typography>
-      ))}
+      <Box sx={{
+        flex: "1 1 auto", minHeight: 0, overflowY: "auto", mr: -1, pr: 1,
+        scrollbarColor: "rgba(255,255,255,0.4) transparent",
+      }}>
+        {nudged && (
+          <Box sx={{
+            mt: 1.25, px: 1.25, py: 1, borderRadius: 1.5,
+            bgcolor: "rgba(255,255,255,0.14)", borderLeft: "4px solid #fff",
+          }}>
+            <Typography sx={{ fontSize: 13.5, fontWeight: 600, lineHeight: 1.45 }}>{nudge(s.place)}</Typography>
+          </Box>
+        )}
 
-      <Stack direction="row" spacing={1} sx={{ mt: 1.25 }}>
-        {step > 0 && (
-          <Box component="button" onClick={() => onStep(step - 1)} sx={{
-            ...button, color: BULLDOG_BLUE, bgcolor: "#fff", border: `1px solid ${BULLDOG_BLUE}`,
-            "&:hover": { bgcolor: "#e4edff" },
+        <Typography sx={{ fontWeight: 700, fontSize: 16.5, mt: 1.25, mb: 0.75, lineHeight: 1.3 }}>
+          {s.title}
+        </Typography>
+        {s.lines.map((l) => (
+          <Typography key={l} sx={{ fontSize: 14, lineHeight: 1.55, mb: 0.9, color: "rgba(255,255,255,0.93)" }}>
+            {l}
+          </Typography>
+        ))}
+        {s.items && (
+          <Box sx={{ borderLeft: "2px solid rgba(255,255,255,0.3)", pl: 1.25, mt: 0.25 }}>
+            {s.items.map((it) => (
+              <Typography key={it.label} sx={{ fontSize: 13, lineHeight: 1.5, mb: 0.75, color: "rgba(255,255,255,0.9)" }}>
+                <Box component="span" sx={{ fontWeight: 700, color: "#fff" }}>{it.label}.</Box>{" "}
+                {it.text}
+              </Typography>
+            ))}
+          </Box>
+        )}
+      </Box>
+
+      {/* Next always sits at the right edge and Back at the left. With Back
+          on Next's left, Back appeared where Next had just been, and a second
+          click on the same spot went backwards. In the popup the row also
+          stays at the same height, since the popup is anchored by its lower
+          edge; in the card on the left edge it moves with the card, which
+          follows the panel box being described. */}
+      <Stack direction="row" justifyContent="space-between" sx={{ mt: 1.5, flexShrink: 0 }}>
+        {step > 0 ? (
+          <Box component="button" type="button" onClick={() => onStep(step - 1)} sx={{
+            ...button, color: "#fff", bgcolor: "transparent",
+            "&:hover": { bgcolor: "rgba(255,255,255,0.15)" },
           }}>
             Back
           </Box>
-        )}
-        <Box component="button" onClick={() => (last ? onEnd() : onStep(step + 1))} sx={{
-          ...button, color: "#fff", bgcolor: BULLDOG_BLUE, border: `1px solid ${BULLDOG_BLUE}`,
-          "&:hover": { bgcolor: NIGHT_SKY },
+        ) : <span />}
+        <Box component="button" type="button" onClick={() => (last ? onEnd() : onStep(step + 1))} sx={{
+          ...button, color: NIGHT_SKY, bgcolor: "#fff", minWidth: 78,
+          "&:hover": { bgcolor: "#dbe7fb" },
         }}>
           {last ? "Done" : "Next"}
         </Box>
@@ -605,9 +847,31 @@ function Guide({ ex, step, steps, color, onStep, onEnd }: {
 }
 
 // a left-panel section, boxed like the landslide viewer's
-function Card({ title, children }: { title?: string; children: React.ReactNode }) {
+//
+// `guide` names the card for the guide to point at, and `lit` marks it as the
+// one the guide is talking about: a Bulldog Blue outline with a slow pulse
+// around it, which holds still for anyone who has asked for less motion.
+function Card({ title, guide, lit, children }: {
+  title?: string;
+  guide?: PanelTarget;
+  lit?: boolean;
+  children: React.ReactNode;
+}) {
   return (
-    <Box sx={{ border: "1px solid #ddd", borderRadius: 1.5, px: 2, py: 1.5, bgcolor: "#fff", mt: 2 }}>
+    <Box data-guide={guide} sx={{
+      border: "1px solid #ddd", borderRadius: 1.5, px: 2, py: 1.5, bgcolor: "#fff", mt: 2,
+      transition: "border-color 200ms, box-shadow 200ms",
+      ...(lit && {
+        borderColor: BULLDOG_BLUE,
+        boxShadow: `0 0 0 3px ${BULLDOG_BLUE}`,
+        animation: "guidePulse 1.8s ease-in-out infinite",
+        "@keyframes guidePulse": {
+          "0%, 100%": { boxShadow: `0 0 0 3px ${BULLDOG_BLUE}, 0 0 0 3px rgba(0,61,165,0.25)` },
+          "50%": { boxShadow: `0 0 0 3px ${BULLDOG_BLUE}, 0 0 0 10px rgba(0,61,165,0.12)` },
+        },
+        "@media (prefers-reduced-motion: reduce)": { animation: "none" },
+      }),
+    }}>
       {title && <Typography variant="subtitle2" gutterBottom>{title}</Typography>}
       {children}
     </Box>
