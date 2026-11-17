@@ -122,6 +122,8 @@ export interface GuideStep {
   // last step).
   place: "road" | "panel";
   target?: PanelTarget;
+  // The step about the hazard: the map lights it up and moves the guide aside.
+  showsHazard?: boolean;
 }
 
 // How a class is drawn, in the words someone would use looking at the map.
@@ -347,7 +349,7 @@ function isolationSteps(hazard: Hazard | undefined, props: Record<string, any> |
         + "matter most to keep open.",
       startHere,
     ] },
-    { place: "road", title: upperFirst(w.area), lines: hazardLines },
+    { place: "road", title: upperFirst(w.area), lines: hazardLines, showsHazard: true },
     { place: "road", title: "What the colour and thickness mean", lines: colourLines },
     { place: "road", title: "What the numbers say", lines: numbers },
   ];

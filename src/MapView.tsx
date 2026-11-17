@@ -373,6 +373,9 @@ interface Props {
   services?: ServiceKind[] | null;
   // Which of the hazard's buildings to draw.
   hazardBuildings?: HazardBuildingStatus[];
+  // The guide is on its step about the hazard: light the hazard up as a hover
+  // does, and move the guide beside its road so it does not cover the hazard.
+  guideOnHazard?: boolean;
 }
 
 // One road to travel to and open the guide popup on. `key` changes when the
@@ -395,7 +398,7 @@ export default function MapView({
   tilesUrl, sourceLayer, classField, score, basemap, opacity, minClass, center, zoom, flyKey,
   countyKey, onEmptyChange, fullBounds, fullLabel, focus, onFocusFeature, onInteract,
   guide, onGuideAway, onGuideClosed, hazard = null, buildingsUrl = null, services = null,
-  hazardBuildings = ["cut_off", "in_hazard"],
+  hazardBuildings = ["cut_off", "in_hazard"], guideOnHazard = false,
 }: Props) {
   const div = useRef<HTMLDivElement>(null);
   const map = useRef<Map | null>(null);
@@ -404,6 +407,8 @@ export default function MapView({
   const pinned = useRef<maplibregl.Popup | null>(null);   // left by a click
   const hazardHover = useRef<maplibregl.Popup | null>(null);  // the hazard's, beside it
   const hazardPinned = useRef(false);
+  // the guide's hazard step holds the highlight on, like a pinned popup
+  const guideHazard = useRef(false);
   // the current props, read by handlers that are registered once
   const latest = useRef({ tilesUrl, sourceLayer, classField, score, basemap, opacity, minClass, countyKey, hazard, hazardBuildings });
   latest.current = { tilesUrl, sourceLayer, classField, score, basemap, opacity, minClass, countyKey, hazard, hazardBuildings };
@@ -432,6 +437,7 @@ export default function MapView({
   // The popup holding the guide, and the element inside it that React draws
   // the guide into. MapLibre owns the popup; React only fills it.
   const guidePopup = useRef<maplibregl.Popup | null>(null);
+  const guideFit = useRef<(() => void) | null>(null);
   const [guideHost, setGuideHost] = useState<HTMLElement | null>(null);
 
   // Mark one road with the glow and leave a closable popup on it. Shared by a
@@ -444,7 +450,8 @@ export default function MapView({
   // `hit` may be null then, when the road could not be found, and the guide
   // still opens at the spot without the glow.
   //
-  // The guide is always anchored above the road. Left to choose, MapLibre
+  // The guide is anchored above the road (beside it only on the hazard step,
+  // set by the effect near the end). Left to choose, MapLibre
   // flips a popup below its point when it is taller than the room above, even
   // with less room below, and the guide's Back and Next row then jumps and is
   // cut off by the map's edge. Fixed to "bottom", its lower edge, where those
@@ -473,9 +480,14 @@ export default function MapView({
     const host = asGuide ? document.createElement("div") : null;
     // offset 14, tip 10, a 10 px margin at the top, and the popup's own
     // padding of 14 above and 12 below
+    // Beside the road it is centred on it, so the whole map's height is the room.
     const fit = () => {
-      if (host) host.style.setProperty("--guide-room", `${Math.max(180, m.project(p.getLngLat()).y - 60)}px`);
+      if (!host) return;
+      const room = p.options.anchor === "bottom"
+        ? m.project(p.getLngLat()).y - 60 : m.getContainer().clientHeight - 40;
+      host.style.setProperty("--guide-room", `${Math.max(180, room)}px`);
     };
+    if (host) guideFit.current = fit;
     if (host) {
       p.setDOMContent(host);
       fit();
@@ -695,7 +707,7 @@ export default function MapView({
       // and fight for the same space.
       const glow = m.getSource("hover") as maplibregl.GeoJSONSource | undefined;
       const overHazard = !!hz && !hit && !svc;
-      if (!hazardPinned.current) setHazardHighlight(m, overHazard);
+      if (!hazardPinned.current && !guideHazard.current) setHazardHighlight(m, overHazard);
       if (pinned.current && (pinned.current !== guidePopup.current || guideInView())) {
         hover.current?.remove();
         hazardHover.current?.remove();
@@ -752,7 +764,7 @@ export default function MapView({
     m.getCanvas().addEventListener("mouseout", () => {
       hover.current?.remove();
       hazardHover.current?.remove();
-      if (!hazardPinned.current) setHazardHighlight(m, false);
+      if (!hazardPinned.current && !guideHazard.current) setHazardHighlight(m, false);
       if (!pinned.current) {
         (m.getSource("hover") as maplibregl.GeoJSONSource | undefined)?.setData(EMPTY_FC);
       }
@@ -796,7 +808,7 @@ export default function MapView({
         // the highlight stays while the pinned popup is open
         hazardPinned.current = true;
         setHazardHighlight(m, true);
-        pinned.current?.on("close", () => { hazardPinned.current = false; setHazardHighlight(m, false); });
+        pinned.current?.on("close", () => { hazardPinned.current = false; setHazardHighlight(m, guideHazard.current); });
       }
     });
 
@@ -1032,6 +1044,37 @@ export default function MapView({
     return () => { m.off("idle", look); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focus?.key]);
+
+  // The guide's step about the hazard (functional isolation only). The hazard
+  // and what it cuts off light up yellow, as they do under the mouse, and the
+  // guide moves beside its road, on the side away from the hazard, so the
+  // hazard it is talking about stays in view. When that side is too narrow for
+  // the guide, the map slides over to make room. Other steps put it back above
+  // the road.
+  useEffect(() => {
+    const m = map.current;
+    if (!m) return;
+    const on = guideOnHazard && hazard != null;
+    guideHazard.current = on;
+    if (!hazardPinned.current) setHazardHighlight(m, on);
+    const p = guidePopup.current;
+    if (!p) return;
+    let anchor: maplibregl.PositionAnchor = "bottom";
+    if (on) {
+      const at = m.project(p.getLngLat());
+      const [w, s, e, n] = hazard!.hazardBounds;
+      const hz = m.project([(w + e) / 2, (s + n) / 2]);
+      anchor = hz.x >= at.x ? "right" : "left";
+      const NEED = 440;   // the guide's 400 px, its offset and tip, and a margin
+      const room = anchor === "right" ? at.x : m.getContainer().clientWidth - at.x;
+      if (room < NEED) m.panBy([anchor === "right" ? room - NEED : NEED - room, 0], { duration: 400 });
+    }
+    if (p.options.anchor !== anchor) {
+      p.options.anchor = anchor;
+      p.setLngLat(p.getLngLat());   // redraws it at the new anchor
+    }
+    guideFit.current?.();
+  }, [guideOnHazard, guideHost, hazard]);
 
   // The page took the guide away (its close button, Done, or a change in the
   // panel), so take its popup off the map.

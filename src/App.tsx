@@ -772,6 +772,7 @@ export default function App() {
             buildingsUrl={buildings && overtureRelease ? overtureBuildingsUrl(overtureRelease) : null}
             services={tab === "detour" ? services : null}
             hazardBuildings={hazardBldgs}
+            guideOnHazard={onHazard && step?.showsHazard === true}
             focus={focus}
             onFocusFeature={(key, props) => {
               // called once the guide's popup is on the road, found or not
