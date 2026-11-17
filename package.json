@@ -10,12 +10,15 @@
     "preview": "vite preview",
     "styles": "node scripts/qml_to_styles.mjs",
     "percentiles": "python3 scripts/make_percentiles.py",
+    "hazards": "python3 scripts/make_hazards.py",
+    "services": "python3 scripts/make_services.py",
     "tiles": "bash scripts/build_tiles.sh",
     "tiles:publish": "bash scripts/publish_tiles.sh"
   },
   "dependencies": {
     "@emotion/react": "^11.11.4",
     "@emotion/styled": "^11.11.5",
+    "@mui/icons-material": "^5.18.0",
     "@mui/material": "^5.15.20",
     "maplibre-gl": "^4.5.0",
     "marked": "^12.0.2",

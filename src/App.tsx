@@ -1,16 +1,26 @@
 import React, { useMemo, useRef, useState } from "react";
 import {
-  Box, Divider, Drawer, FormControl, Link, MenuItem, Radio, RadioGroup,
+  Box, ButtonBase, Checkbox, Divider, Drawer, FormControl, Link, MenuItem, MenuList, Popover, Radio, RadioGroup,
   FormControlLabel, Select, Slider, Stack, Tab, Tabs, Tooltip, Typography,
 } from "@mui/material";
 import MapView, { Focus } from "./MapView";
+import LocalFireDepartmentIcon from "@mui/icons-material/LocalFireDepartment";
+import HealthAndSafetyIcon from "@mui/icons-material/HealthAndSafety";
+import SchoolIcon from "@mui/icons-material/School";
+import LocalGroceryStoreIcon from "@mui/icons-material/LocalGroceryStore";
+import PublicIcon from "@mui/icons-material/Public";
+import CheckIcon from "@mui/icons-material/Check";
 import MapBoundary from "./MapBoundary";
 import Methodology from "./Methodology";
 import { BULLDOG_BLUE, NIGHT_SKY, ORG_LOGO_SCREEN, ORG_NAME, ORG_URL } from "./brand";
 import {
-  BASEMAPS, BasemapKey, COUNTIES, DEFAULT_BASEMAP, DEFAULT_COUNTY, DEFAULT_TAB,
-  DETOUR_SCORES, METHODOLOGY, METHODS, MethodId, NC_BOUNDS, NC_CENTER, NC_ZOOM,
-  PINCH_SCORES, PINCH_TILES, SERVICES, STYLES, Score, TILES_BASE, TabId, classField,
+  BASEMAPS, BasemapKey, COUNTIES, CUT_OFF_CLASS, DEFAULT_BASEMAP, DEFAULT_COUNTY, DEFAULT_CUTOFF,
+  DEFAULT_TAB, DETOUR_SCORES, HAZARDS, HAZARD_WORDS, ISOLATION_SCORES, METHODOLOGY, METHODS,
+  MIN_RANKED, MethodId, NC_BOUNDS, NC_CENTER, NC_ZOOM, PINCH_SCORES, PINCH_TILES,
+  STYLES, Score, TILES_BASE, TabId, classField, defaultHazard, hazardView, hazardsIn,
+  latestOvertureRelease, overtureBuildingsUrl, BUILDING_COLOR, BUILDING_OUTLINE, OVERTURE_BUILDINGS_URL,
+  shareRange,
+  SERVICE_INK, SERVICE_KINDS, ServiceKind, HAZARD_BUILDING_COLORS, HazardBuildingStatus,
 } from "./config";
 import {
   Example, GuideStep, OPENING_EXAMPLE, PanelTarget, classColor, firstExample, guideSteps, nudge,
@@ -30,8 +40,10 @@ const rememberGuideClosed = () => {
 // itself into a circle in the corner.
 const PILL_MS = 15000;
 
-// The tabs in the title bar, in order.
+// The tabs in the title bar, in order. The first is the one a plain address
+// opens on (DEFAULT_TAB in config.ts).
 const NAV_TABS: { value: TabId; label: string }[] = [
+  { value: "isolation", label: "Functional isolation" },
   { value: "detour", label: "Detours" },
   { value: "pinch", label: "Pinch points" },
 ];
@@ -69,6 +81,9 @@ const fromUrl = (key: string, fallback: string) => urlState.get(key) ?? fallback
 // The two choices on the detour tab, the county and what the map shows, share
 // one solid Bulldog Blue look, so both read as the controls that change the
 // map. The score picker in plain white was easy to miss among the cards.
+// Checkboxes in the panel, ticked in Bulldog Blue.
+const CHECK_SX = { "&.Mui-checked": { color: BULLDOG_BLUE } };
+
 const PICKER_SX = {
   bgcolor: BULLDOG_BLUE, color: "#fff",
   "& fieldset, &:hover fieldset, &.Mui-focused fieldset": { borderColor: BULLDOG_BLUE },
@@ -76,11 +91,23 @@ const PICKER_SX = {
 };
 
 export default function App() {
-  const [tab, setTab] = useState<TabId>(
-    fromUrl("tab", DEFAULT_TAB) === "pinch" ? "pinch" : "detour");
+  const [tab, setTab] = useState<TabId>(() => {
+    const t = fromUrl("tab", DEFAULT_TAB);
+    return NAV_TABS.some((x) => x.value === t) ? (t as TabId) : DEFAULT_TAB;
+  });
   const [county, setCounty] = useState(() => {
     const c = fromUrl("county", DEFAULT_COUNTY);
     return COUNTIES.some((x) => x.id === c) ? c : DEFAULT_COUNTY;
+  });
+  // The hazard on the functional isolation tab, always one in the county
+  // picked; a link naming a hazard in another county gets that county's first.
+  const [hazardId, setHazardId] = useState(() => {
+    const h = fromUrl("hazard", "");
+    return hazardsIn(county).some((x) => x.id === h) ? h : defaultHazard(county);
+  });
+  const [cutoff, setCutoff] = useState(() => {
+    const c = Number(fromUrl("cutoff", String(DEFAULT_CUTOFF)));
+    return ISOLATION_SCORES.some((s) => s.minutes === c) ? c : DEFAULT_CUTOFF;
   });
   const [method, setMethod] = useState<MethodId>(() => {
     const m = fromUrl("method", "geometric");
@@ -90,11 +117,38 @@ export default function App() {
     const s = fromUrl("score", DETOUR_SCORES[0].base);
     return DETOUR_SCORES.some((x) => x.base === s) ? s : DETOUR_SCORES[0].base;
   });
+  // Overture's buildings over the basemap, for context. Off unless the link
+  // or the reader turns them on. The release is looked up the first time.
+  const [buildings, setBuildings] = useState(fromUrl("buildings", "0") === "1");
+  const [overtureRelease, setOvertureRelease] = useState<string | null>(null);
+  React.useEffect(() => {
+    if (buildings && !overtureRelease) latestOvertureRelease().then(setOvertureRelease);
+  }, [buildings, overtureRelease]);
+  // The services drawn as icons on the Detours tab: all four to begin with.
+  const [services, setServices] = useState<ServiceKind[]>(() => {
+    const raw = urlState.get("svc");
+    if (raw == null) return SERVICE_KINDS.map((k) => k.id);
+    return SERVICE_KINDS.map((k) => k.id).filter((id) => raw.split(",").includes(id));
+  });
+  const toggleService = (id: ServiceKind) =>
+    setServices((cur) => (cur.includes(id) ? cur.filter((x) => x !== id)
+      : SERVICE_KINDS.map((k) => k.id).filter((k) => k === id || cur.includes(k))));
+  // The hazard's own buildings on the functional isolation tab: both kinds
+  // shown to begin with.
+  const [hazardBldgs, setHazardBldgs] = useState<HazardBuildingStatus[]>(() => {
+    const raw = urlState.get("hb");
+    const all: HazardBuildingStatus[] = ["cut_off", "in_hazard"];
+    return raw == null ? all : all.filter((k) => raw.split(",").includes(k));
+  });
+  const toggleHazardBldg = (k: HazardBuildingStatus) => setHazardBldgs((cur) =>
+    (cur.includes(k) ? cur.filter((x) => x !== k)
+      : (["cut_off", "in_hazard"] as HazardBuildingStatus[]).filter((x) => x === k || cur.includes(x))));
   const [basemap, setBasemap] = useState<BasemapKey>(() => {
     const b = fromUrl("basemap", DEFAULT_BASEMAP);
     return (b in BASEMAPS ? b : DEFAULT_BASEMAP) as BasemapKey;
   });
-  const [opacity, setOpacity] = useState(Number(fromUrl("opacity", "0.95")) || 0.95);
+  // The roads' opacity, fixed now that its slider is gone.
+  const opacity = 0.95;
   const [minClass, setMinClass] = useState(Number(fromUrl("min", "1")) || 1);
   const [left, setLeft] = useState(() =>
     Math.min(MAX_LEFT, Math.max(MIN_LEFT, Number(fromUrl("left", String(LEFT))) || LEFT)));
@@ -155,6 +209,7 @@ export default function App() {
     setCounty(ex.county);
     setMethod("geometric");
     if (ex.tab === "detour") setDetourScore(DETOUR_SCORES[0].base);
+    if (ex.hazard) { setHazardId(ex.hazard); setCutoff(DEFAULT_CUTOFF); }
     setMinClass(1);
     setGuideProps(null);
     setGuide({ ex, step: 0, nudged: false });
@@ -162,12 +217,35 @@ export default function App() {
   };
 
   const score: Score = useMemo(
-    () => (tab === "pinch" ? PINCH_SCORES[0] : DETOUR_SCORES.find((s) => s.base === detourScore)!),
-    [tab, detourScore]);
+    () => (tab === "pinch" ? PINCH_SCORES[0]
+      : tab === "isolation" ? ISOLATION_SCORES.find((s) => s.minutes === cutoff)!
+      : DETOUR_SCORES.find((s) => s.base === detourScore)!),
+    [tab, detourScore, cutoff]);
 
   const field = classField(score.base, method);
   const classes = STYLES[field]?.classes ?? [];
+  // The ranks 1 to 10, and apart from them the class for roads cut off
+  // completely, which only the functional isolation styles have.
+  const ranks = classes.filter((c) => c.value !== CUT_OFF_CLASS);
+  const cutOffStyle = classes.find((c) => c.value === CUT_OFF_CLASS);
   const countyObj = COUNTIES.find((c) => c.id === county)!;
+  const hazard = HAZARDS.find((h) => h.id === hazardId) ?? null;
+  // The drive times this hazard's run has. A run made before 30 minutes was
+  // added has only 5, 10 and 15, and the slider offers only those; a link or
+  // a switch landing on a drive time the run lacks falls back to 15.
+  const cutoffsHere = ISOLATION_SCORES.filter((x) => hazard?.losing?.[String(x.minutes)] != null);
+  const slidable = cutoffsHere.length ? cutoffsHere : ISOLATION_SCORES;
+  React.useEffect(() => {
+    if (tab === "isolation" && !slidable.some((x) => x.minutes === cutoff)) setCutoff(DEFAULT_CUTOFF);
+  }, [tab, hazardId, cutoff]);
+  const hazardWords = HAZARD_WORDS[hazard?.kind ?? "flood"];
+  // Too few roads losing anything at this drive time for ten ranks to mean
+  // anything (the I-40 landslide within 5 minutes).
+  const unranked = tab === "isolation" && hazard
+    ? (hazard.losing[String(cutoff)] ?? 0) < MIN_RANKED : false;
+  // What each rank stands for on this hazard, drive time and classification:
+  // the lowest and highest share of places out of reach among its roads.
+  const rankRanges = tab === "isolation" && hazard ? hazard.classRanges?.[`${cutoff}_${method}`] ?? null : null;
   const steps = guide ? guideSteps(guide.ex, guideProps, field) : [];
   const step = guide ? steps[Math.min(guide.step, steps.length - 1)] : null;
   // The guide's first steps sit in the popup on the road; the rest point at
@@ -194,6 +272,7 @@ export default function App() {
       setCounty(guide.ex.county);
       setMethod("geometric");
       if (guide.ex.tab === "detour") setDetourScore(DETOUR_SCORES[0].base);
+      if (guide.ex.hazard) { setHazardId(guide.ex.hazard); setCutoff(DEFAULT_CUTOFF); }
       setFocus((f) => focusFor(guide.ex, f ? Number(f.key.split(":")[1]) + 1 : 1));
     }
     setGuide({ ...guide, step: n, nudged: false });
@@ -204,10 +283,18 @@ export default function App() {
   // the panel, trying the controls is the point, so the guide stays.
   const panelChanged = () => { if (!onPanelStep) endGuide(); };
 
-  // Go to a study area and make sure the map actually moves there.
+  // Go to a study area and make sure the map actually moves there. A new
+  // county also brings its first hazard, so the hazard always belongs to the
+  // county shown.
   const goToCounty = (id: string) => {
     panelChanged();
     setCounty(id);
+    if (id !== county) setHazardId(defaultHazard(id));
+    setFlyNonce((n) => n + 1);
+  };
+  const goToHazard = (id: string) => {
+    panelChanged();
+    setHazardId(id);
     setFlyNonce((n) => n + 1);
   };
 
@@ -259,20 +346,28 @@ export default function App() {
     };
   }, [onPanelStep, panelTarget]);
 
-  const tilesUrl = new URL(tab === "pinch" ? PINCH_TILES : countyObj.tiles, TILES_BASE).href;
-  const sourceLayer = tab === "pinch" ? "pinch" : "detour";
-  const center: [number, number] = tab === "pinch" ? NC_CENTER : countyObj.center;
-  const zoom = tab === "pinch" ? NC_ZOOM : countyObj.zoom;
+  const onHazard = tab === "isolation" && hazard != null;
+  const tilesUrl = new URL(
+    tab === "pinch" ? PINCH_TILES : onHazard ? hazard.tiles : countyObj.tiles, TILES_BASE).href;
+  const sourceLayer = tab === "pinch" ? "pinch" : tab === "isolation" ? "roads" : "detour";
+  const view = onHazard ? hazardView(hazard) : null;
+  const center: [number, number] = tab === "pinch" ? NC_CENTER : view ? view.center : countyObj.center;
+  const zoom = tab === "pinch" ? NC_ZOOM : view ? view.zoom : countyObj.zoom;
+  const fullBounds = tab === "pinch" ? NC_BOUNDS : onHazard ? hazard.bounds : countyObj.bounds;
+  const fullLabel = tab === "pinch" ? "Show the whole state"
+    : onHazard ? `Show everything within ${hazard.bufferMiles} miles of the hazard`
+    : `Show all of ${countyObj.label} County`;
 
   // keep the hash in step with the panel
   React.useEffect(() => {
     const p = new URLSearchParams(window.location.hash.replace(/^#/, ""));
     Object.entries({
-      tab, county, method, score: detourScore, basemap,
-      opacity: String(opacity), min: String(minClass), left: String(left),
+      tab, county, hazard: hazardId, cutoff: String(cutoff), method, score: detourScore, basemap,
+      buildings: buildings ? "1" : "0", svc: services.join(","), hb: hazardBldgs.join(","),
+      min: String(minClass), left: String(left),
     }).forEach(([k, v]) => p.set(k, v));
     window.history.replaceState(null, "", `#${p.toString()}`);
-  }, [tab, county, method, detourScore, basemap, opacity, minClass, left]);
+  }, [tab, county, hazardId, cutoff, method, detourScore, basemap, buildings, services, hazardBldgs, minClass, left]);
 
   // drag the panel's right edge to resize it
   const startDrag = (e: React.MouseEvent) => {
@@ -411,35 +506,69 @@ export default function App() {
         }} />
 
         <Box ref={panelRef} sx={{ p: 2, overflowY: "auto", flex: 1 }}>
-          {tab === "pinch" ? (
-            <Typography variant="body2" color="text.secondary">
-              Every road segment in the state, scored by how much traffic depends on it and
-              how far that traffic must go if it is cut. Click a segment for its numbers.
-            </Typography>
-          ) : (
-            <Typography variant="body2" color="text.secondary">
-              What happens when one segment is cut and traffic must re-route to reach{" "}
-              {SERVICES.join(", ")}. Click a segment for its numbers.
-            </Typography>
-          )}
-
-          {/* The same box on both tabs, first: the name of what the colours
+          {/* The same box on every tab, first: the name of what the colours
               measure and a sentence or two on what it means. On the detour
-              tab the two lists that change it follow. */}
+              and functional isolation tabs the lists that change it follow. */}
+          {/* The panel used to open with a paragraph on what each tab is
+              about; at the user's request it was folded into this box's
+              text, to keep the panel short. */}
           <Card title="What the map shows" guide="shows" lit={panelTarget === "shows"}>
             <Typography variant="body2" sx={{ fontWeight: 600 }}>{score.label}</Typography>
-            <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
-              {score.help}
-            </Typography>
+            {/* On the functional isolation tab the measure is spelled out in
+                full, in body text, with the share itself in bold: the user
+                asked for it to stand out, since everything else on the tab
+                is read through it. */}
+            {tab === "isolation" ? (
+              <Typography variant="body2" sx={{ mt: 0.5, lineHeight: 1.5 }}>
+                For someone on a road near the hazard: of the homes, shops, schools and other
+                buildings they could drive to within {cutoff} minutes,{" "}
+                <b>the share they can no longer get to</b> once the hazard closes the roads it covers.
+              </Typography>
+            ) : (
+              <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
+                {score.help}
+              </Typography>
+            )}
           </Card>
 
-          {tab === "detour" && (
+          {tab !== "pinch" && (
             <Card title="Choose a county" guide="county" lit={panelTarget === "county"}>
               <Select fullWidth size="small" value={county}
-                onChange={(e) => { panelChanged(); setCounty(e.target.value); }}
+                onChange={(e) => goToCounty(e.target.value)}
                 sx={PICKER_SX}>
                 {COUNTIES.map((c) => <MenuItem key={c.id} value={c.id}>{c.label}</MenuItem>)}
               </Select>
+            </Card>
+          )}
+
+          {tab === "isolation" && (
+            <Card title="Choose a hazard" guide="hazard" lit={panelTarget === "hazard"}>
+              <Select fullWidth size="small" value={hazardId} sx={PICKER_SX}
+                onChange={(e) => goToHazard(e.target.value)}>
+                {hazardsIn(county).map((h) => <MenuItem key={h.id} value={h.id}>{h.label}</MenuItem>)}
+              </Select>
+            </Card>
+          )}
+
+          {/* The drive time as a slider rather than a list, so moving between
+              5, 10, 15 and 30 minutes shows the loss growing or shrinking. It
+              stops only at the three times the runs measured. */}
+          {tab === "isolation" && (
+            <Card title="Choose a drive time" guide="score" lit={panelTarget === "score"}>
+              <Box sx={{ px: 1.5, pt: 0.5 }}>
+                {/* One even step per drive time, so 5, 10 and 15 do not
+                    bunch up beside a far-off 30. */}
+                <Slider value={Math.max(0, slidable.findIndex((x) => x.minutes === cutoff))}
+                  min={0} max={slidable.length - 1} step={1}
+                  marks={slidable.map((x, i) => ({ value: i, label: `${x.minutes} min` }))}
+                  onChange={(_, v) => {
+                    const m = slidable[v as number]?.minutes;
+                    if (m != null && m !== cutoff) { panelChanged(); setCutoff(m); }
+                  }}
+                  aria-label="Drive time in minutes"
+                  getAriaValueText={(v) => `${slidable[v]?.minutes} minutes`}
+                  sx={{ color: BULLDOG_BLUE, "& .MuiSlider-markLabel": { fontSize: 13 } }} />
+              </Box>
             </Card>
           )}
 
@@ -451,6 +580,25 @@ export default function App() {
                   {DETOUR_SCORES.map((s) => <MenuItem key={s.base} value={s.base}>{s.label}</MenuItem>)}
                 </Select>
               </FormControl>
+            </Card>
+          )}
+
+          {tab === "detour" && (
+            <Card title="Services on the map" guide="services" lit={panelTarget === "services"}>
+              <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.25 }}>
+                The places the trips are counted to.
+              </Typography>
+              {SERVICE_KINDS.map((k) => (
+                <FormControlLabel key={k.id} sx={{ ml: -0.75, display: "flex", my: 0.25 }}
+                  control={<Checkbox size="small" checked={services.includes(k.id)} sx={CHECK_SX}
+                    onChange={() => toggleService(k.id)} />}
+                  label={
+                    <Stack direction="row" spacing={1} alignItems="center">
+                      <ServiceIcon kind={k.id} />
+                      <Typography variant="body2">{k.label}</Typography>
+                    </Stack>
+                  } />
+              ))}
             </Card>
           )}
 
@@ -477,51 +625,95 @@ export default function App() {
 
           <Card title="Legend" guide="legend" lit={panelTarget === "legend"}>
             <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
-              {score.label}, {METHODS.find((m) => m.id === method)?.label.toLowerCase()} breaks.
+              {tab === "isolation"
+                ? `Each rank, with the share of the places within a ${cutoff} minute drive that someone on those roads can no longer get to:`
+                : `${score.label}, ${METHODS.find((m) => m.id === method)?.label.toLowerCase()} breaks.`}
             </Typography>
-            {/* high class at the top, as a map legend reads */}
-            {[...classes].reverse().map((c) => (
-              <Stack key={c.value} direction="row" spacing={1} alignItems="center"
-                sx={{ opacity: c.value >= minClass ? 1 : 0.3, py: 0.1 }}>
-                <Box sx={{
-                  width: 26, bgcolor: c.color,
-                  height: Math.max(2, c.widthMm * 7), borderRadius: "1px",
-                }} />
-                <Typography variant="caption">{c.label}</Typography>
-              </Stack>
-            ))}
-            {/* the slider and its instruction sit together, set apart from the
-                swatches above so the two read as separate things */}
-            <Box sx={{ mt: 3.5 }}>
-              <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.5 }}>
-                Drag to the right to hide the lower ranks.
+            {unranked && hazard && (
+              <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
+                Only {hazard.losing[String(cutoff)]}{" "}
+                {hazard.losing[String(cutoff)] === 1 ? "road loses" : "roads lose"} anything
+                within {cutoff} minutes, too few to rank, so the other roads are all in rank 1.
               </Typography>
-              <Box sx={{ px: 0.5 }}>
-                <Slider size="small" min={1} max={10} step={1} marks value={minClass}
+            )}
+            {/* High class at the top, as a map legend reads. On the functional
+                isolation tab the red for roads cut off completely or closed
+                sits above 10, as the last value of the scale (the user asked
+                for it there rather than set apart). It never fades with the
+                slider, which never hides it. */}
+            {cutOffStyle && <LegendRow c={cutOffStyle} label="Cut off completely or closed" on />}
+            {/* The ranks, with the slider standing beside them: each rank's
+                row lines up with a stop on the slider, so the handle sits
+                beside the lowest rank still shown. Moving it up hides the
+                ranks below it. Set beside the list rather than under it, at
+                the user's request, to keep the panel short. */}
+            <Stack direction="row" spacing={2} alignItems="flex-start">
+              <Box sx={{ minWidth: 0 }}>
+                {[...ranks].reverse().map((c) => (
+                  <LegendRow key={c.value} c={c} on={c.value >= minClass}
+                    label={rankRanges ? `${c.label}: ${shareRange(rankRanges[c.value - 1])}` : c.label} />
+                ))}
+              </Box>
+              <Stack alignItems="center" sx={{ flexShrink: 0 }}>
+                {/* the blue part of the track runs beside the ranks still shown */}
+                <Slider orientation="vertical" size="small" min={1} max={10} step={1} marks value={minClass}
+                  track="inverted"
                   onChange={(_, v) => setMinClass(v as number)}
                   valueLabelDisplay="auto"
                   valueLabelFormat={(v) => (v === 1 ? "all ranks" : `rank ${v} and up`)}
-                  sx={{ color: BULLDOG_BLUE }} />
+                  aria-label="Lowest rank shown"
+                  sx={{
+                    color: BULLDOG_BLUE,
+                    height: (ranks.length - 1) * LEGEND_ROW, my: `${LEGEND_ROW / 2}px`,
+                  }} />
+              </Stack>
+              <Typography variant="caption" color="text.secondary"
+                sx={{ alignSelf: "flex-end", maxWidth: 110, lineHeight: 1.35, pb: 0.25 }}>
+                Slide up to hide the lower ranks.
+              </Typography>
+            </Stack>
+            {/* Buildings, under the ranks at the user's request, with a heading
+                that links to Overture's page on its buildings data. Each row
+                is a checkbox, a footprint swatch in the colour the map draws,
+                and its name. */}
+            <Typography variant="caption" sx={{ display: "block", mt: 1.25, fontWeight: 700 }}>
+              Buildings, from{" "}
+              <Link href={OVERTURE_BUILDINGS_URL} target="_blank" rel="noopener" sx={{ color: BULLDOG_BLUE }}>
+                Overture Maps
+              </Link>
+            </Typography>
+            <BuildingRow checked={buildings} onChange={() => setBuildings((b) => !b)}
+              fill={BUILDING_COLOR} edge={BUILDING_OUTLINE} label="All buildings" />
+            {tab === "isolation" && ([
+              ["cut_off", "Cut off"],
+              ["in_hazard", `${hazardWords.inside.charAt(0).toUpperCase()}${hazardWords.inside.slice(1)}`],
+            ] as [HazardBuildingStatus, string][]).map(([k, label]) => (
+              <BuildingRow key={k} checked={hazardBldgs.includes(k)} onChange={() => toggleHazardBldg(k)}
+                fill={HAZARD_BUILDING_COLORS[k]} edge="#141414" label={label} />
+            ))}
+            {/* the hazard itself, in its hatching */}
+            {tab === "isolation" && (
+              <Box sx={{ mt: 1.5, pt: 1.25, borderTop: "1px solid #e6e8eb" }}>
+                <Stack direction="row" spacing={1} alignItems="flex-start">
+                  <Box sx={{
+                    width: 26, height: 16, flexShrink: 0, border: "2px solid #23272e", borderRadius: "2px",
+                    background: "repeating-linear-gradient(135deg, #23272e 0 2px, #fff 2px 3px, "
+                      + "transparent 3px 7px, #fff 7px 8px)",
+                  }} />
+                  <Typography variant="caption" sx={{ lineHeight: 1.45 }}>
+                    <b>{hazardWords.area.charAt(0).toUpperCase() + hazardWords.area.slice(1)}.</b>{" "}
+                    Every road inside it is closed and drawn in red, like the roads it cuts off
+                    completely. The shaded part of the map lies beyond the{" "}
+                    {hazard?.bufferMiles ?? 20} miles around it that this run covers.
+                  </Typography>
+                </Stack>
               </Box>
-            </Box>
+            )}
           </Card>
 
-          <Card title="Map" guide="map" lit={panelTarget === "map"}>
-            <Typography variant="caption" color="text.secondary">Basemap</Typography>
-            <Select fullWidth size="small" value={basemap} sx={{ mt: 0.5, mb: 1.5 }}
-              onChange={(e) => setBasemap(e.target.value as BasemapKey)}>
-              {(Object.keys(BASEMAPS) as BasemapKey[]).map((k) =>
-                <MenuItem key={k} value={k}>{BASEMAPS[k].label}</MenuItem>)}
-            </Select>
-            <Typography variant="caption" color="text.secondary">Road opacity</Typography>
-            <Box sx={{ px: 0.5 }}>
-              <Slider size="small" min={0.2} max={1} step={0.05} value={opacity}
-                onChange={(_, v) => setOpacity(v as number)}
-                valueLabelDisplay="auto"
-                valueLabelFormat={(v) => `${Math.round(v * 100)}%`}
-                sx={{ color: BULLDOG_BLUE }} />
-            </Box>
-          </Card>
+          {/* There is no Map card: the basemap is picked with the globe
+              button on the map, and the road opacity slider was removed at
+              the user's request. */}
 
           {/* left off entirely on a tab whose note is not written yet */}
           {METHODOLOGY[tab].length > 0 && (
@@ -544,7 +736,9 @@ export default function App() {
           <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 2 }}
             onDoubleClick={resetRemembered}>
             Symbology from {STYLES[field]?.source ?? "the QGIS styles"} in output/.
-            Roads: Overture Maps Foundation.
+            {onHazard
+              ? ` Roads and buildings: Overture Maps Foundation, release ${hazard.overtureRelease}.`
+              : " Roads: Overture Maps Foundation."}
           </Typography>
         </Box>
       </Drawer>
@@ -565,10 +759,16 @@ export default function App() {
             minClass={minClass}
             center={center}
             zoom={zoom}
-            flyKey={`${county}:${flyNonce}`}
+            // The same key on every tab, so switching tabs keeps the view;
+            // picking a county or a hazard moves it.
+            flyKey={`${county}:${hazardId}:${flyNonce}`}
             countyKey={county}
-            fullBounds={tab === "pinch" ? NC_BOUNDS : countyObj.bounds}
-            fullLabel={tab === "pinch" ? "Show the whole state" : `Show all of ${countyObj.label} County`}
+            fullBounds={fullBounds}
+            fullLabel={fullLabel}
+            hazard={onHazard ? hazard : null}
+            buildingsUrl={buildings && overtureRelease ? overtureBuildingsUrl(overtureRelease) : null}
+            services={tab === "detour" ? services : null}
+            hazardBuildings={hazardBldgs}
             focus={focus}
             onFocusFeature={(key, props) => {
               // called once the guide's popup is on the road, found or not
@@ -586,6 +786,8 @@ export default function App() {
             onGuideClosed={endGuide}
           />
         </MapBoundary>
+
+        <BasemapPicker value={basemap} onChange={setBasemap} />
 
         {/* The guide during the steps about the panel: a dark card on the
             map's left edge, its arrow on the panel card being described. */}
@@ -611,7 +813,7 @@ export default function App() {
         )}
 
         {!guide && (
-          <GuideLauncher shape={launcher} onStart={() => startExample(firstExample(tab))} />
+          <GuideLauncher shape={launcher} onStart={() => startExample(firstExample(tab, hazardId))} />
         )}
 
         {/* One line on what to do, for someone who arrived by a link or left
@@ -620,7 +822,7 @@ export default function App() {
             the "Start the guide" pill while that is showing, and once the
             pill has become the circle in the corner, it is centred in the
             space to the circle's right so it never covers it. */}
-        {!guide && !touched && !(tab === "detour" && mapEmpty) && (
+        {!guide && !touched && !(tab !== "pinch" && mapEmpty) && (
           <Box sx={{
             position: "absolute", bottom: launcher === "pill" ? 34 + LAUNCHER_SIZE + 12 : 34,
             left: launcher === "pill" ? "50%" : `calc(50% + ${(12 + LAUNCHER_SIZE) / 2}px)`,
@@ -640,6 +842,34 @@ export default function App() {
             land somewhere the detour runs do not cover: those exist for three
             counties, not the whole state. Rather than leave a blank map with no
             explanation, say so and offer the places that do have data. */}
+        {/* The same on the functional isolation tab, where each hazard's run
+            covers only the area around it. */}
+        {onHazard && mapEmpty && (
+          <Box sx={{
+            position: "absolute", top: "50%", left: "50%", transform: "translate(-50%, -50%)",
+            bgcolor: "#fff", borderRadius: 2, px: 2.5, py: 2, maxWidth: 460,
+            boxShadow: "0 6px 24px rgba(16,24,40,0.18)",
+            border: "1px solid #dfe3e8", zIndex: 5,
+          }}>
+            <Typography sx={{ fontWeight: 700, fontSize: 14.5, mb: 0.5 }}>
+              No data for this hazard here
+            </Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+              Each hazard covers the roads within {hazard.bufferMiles} miles of it. This one
+              is {hazard.label.charAt(0).toLowerCase() + hazard.label.slice(1)}.
+            </Typography>
+            <Box component="button" onClick={() => goToHazard(hazard.id)}
+              sx={{
+                font: "inherit", fontWeight: 600, fontSize: 13.5, cursor: "pointer",
+                px: 1.75, py: 0.75, borderRadius: 1.5, color: "#fff",
+                bgcolor: BULLDOG_BLUE, border: "none",
+                "&:hover": { bgcolor: NIGHT_SKY },
+              }}>
+              Go to the hazard
+            </Box>
+          </Box>
+        )}
+
         {tab === "detour" && mapEmpty && (
           <Box sx={{
             position: "absolute", top: "50%", left: "50%", transform: "translate(-50%, -50%)",
@@ -842,6 +1072,114 @@ function MapGuide({ ex, step, steps, color, nudged, onStep, onEnd }: {
           {last ? "Done" : "Next"}
         </Box>
       </Stack>
+    </Box>
+  );
+}
+
+// The basemap button at the map's top left, as in the DamSure frontend: a
+// white pill with a globe and the word "Basemap" (just the globe on a
+// phone), opening a short list with a tick by the one in use. Picking one
+// changes the map at once and the list stays open, so another can be tried.
+// A click outside, Escape or the button again closes it.
+function BasemapPicker({ value, onChange }: { value: BasemapKey; onChange: (k: BasemapKey) => void }) {
+  const [open, setOpen] = useState(false);
+  const button = useRef<HTMLButtonElement | null>(null);
+  const label = `Basemap: ${BASEMAPS[value].label}`;
+  return (
+    <>
+      <Tooltip title={open ? "" : label} placement="right">
+        <ButtonBase ref={button} aria-label={`${label}. Change the basemap`} aria-haspopup="menu"
+          aria-expanded={open} onClick={() => setOpen((o) => !o)}
+          sx={{
+            position: "absolute", top: 10, left: 10, zIndex: 3, gap: 0.75, height: 40, minWidth: 40,
+            px: { xs: 0, md: 1.5 }, borderRadius: "20px", color: NIGHT_SKY, bgcolor: "#fff",
+            fontSize: 14, fontWeight: 700,
+            boxShadow: open ? `0 2px 6px rgba(0,20,45,0.25), 0 0 0 2px ${BULLDOG_BLUE}` : "0 2px 6px rgba(0,20,45,0.25)",
+            "&:hover": { bgcolor: "#eef2f7" },
+            "&.Mui-focusVisible": { outline: `2px solid ${BULLDOG_BLUE}`, outlineOffset: 2 },
+          }}>
+          <PublicIcon fontSize="small" />
+          <Box component="span" aria-hidden="true" sx={{ display: { xs: "none", md: "inline" } }}>Basemap</Box>
+        </ButtonBase>
+      </Tooltip>
+      <Popover open={open} anchorEl={button.current} onClose={() => setOpen(false)}
+        anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
+        transformOrigin={{ vertical: "top", horizontal: "left" }}
+        slotProps={{ paper: { sx: { width: 210, mt: 1, py: 1, borderRadius: 2, boxShadow: "0 4px 14px rgba(0,20,45,0.22)" } } }}>
+        <Typography variant="caption" component="div" sx={{
+          px: 2, pb: 0.5, color: "text.secondary", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em",
+        }}>
+          Basemap
+        </Typography>
+        <MenuList dense disablePadding autoFocusItem={open} aria-label="Basemap"
+          onKeyDown={(e) => { if (e.key === "Tab") { e.preventDefault(); setOpen(false); } }}>
+          {(Object.keys(BASEMAPS) as BasemapKey[]).map((k) => (
+            <MenuItem key={k} role="menuitemradio" aria-checked={k === value} selected={k === value}
+              onClick={() => onChange(k)}
+              sx={{
+                justifyContent: "space-between", gap: 1, fontWeight: k === value ? 700 : 400,
+                "&.Mui-selected": { bgcolor: "transparent" },
+                "&:hover, &.Mui-selected:hover": { bgcolor: "#eef2f7" },
+              }}>
+              {BASEMAPS[k].label}
+              {k === value && <CheckIcon sx={{ fontSize: 18, color: BULLDOG_BLUE }} />}
+            </MenuItem>
+          ))}
+        </MenuList>
+      </Popover>
+    </>
+  );
+}
+
+// One row of the legend: the line as the map draws it, and its name. Every
+// row is the same height, so the rank rows line up with the stops on the
+// slider beside them.
+const LEGEND_ROW = 20;
+function LegendRow({ c, label, on }: { c: { color: string; widthMm: number }; label: string; on: boolean }) {
+  return (
+    <Stack direction="row" spacing={1} alignItems="center" sx={{ height: LEGEND_ROW, opacity: on ? 1 : 0.3 }}>
+      <Box sx={{
+        width: 26, bgcolor: c.color, flexShrink: 0,
+        height: Math.max(2, c.widthMm * 7), borderRadius: "1px",
+      }} />
+      <Typography variant="caption" sx={{ whiteSpace: "nowrap" }}>{label}</Typography>
+    </Stack>
+  );
+}
+
+// One kind of building in the legend: its checkbox, a small footprint in the
+// colour the map draws it, and its name.
+function BuildingRow({ checked, onChange, fill, edge, label }: {
+  checked: boolean; onChange: () => void; fill: string; edge: string; label: string;
+}) {
+  return (
+    <FormControlLabel sx={{ ml: -0.75, display: "flex", height: 30 }}
+      control={<Checkbox size="small" checked={checked} onChange={onChange} sx={CHECK_SX} />}
+      label={
+        <Stack direction="row" spacing={1} alignItems="center">
+          <Box sx={{ width: 16, height: 11, bgcolor: fill, border: `1px solid ${edge}`, borderRadius: "1px" }} />
+          <Typography variant="body2">{label}</Typography>
+        </Stack>
+      } />
+  );
+}
+
+// A service's icon as the map draws it: the filled Material icon in Night Sky
+// inside a white circle with a thin ring.
+const SERVICE_ICONS: Record<ServiceKind, typeof SchoolIcon> = {
+  fire: LocalFireDepartmentIcon,
+  medical: HealthAndSafetyIcon,
+  school: SchoolIcon,
+  grocery: LocalGroceryStoreIcon,
+};
+function ServiceIcon({ kind }: { kind: ServiceKind }) {
+  const Icon = SERVICE_ICONS[kind];
+  return (
+    <Box sx={{
+      width: 24, height: 24, borderRadius: "50%", bgcolor: "#fff", border: `1.5px solid ${SERVICE_INK}`,
+      display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
+    }}>
+      <Icon sx={{ fontSize: 16, color: SERVICE_INK }} />
     </Box>
   );
 }

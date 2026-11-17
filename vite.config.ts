@@ -43,5 +43,8 @@ export default defineConfig({
     // 5173 and 5180 are already taken by other work on this machine.
     port: 5190,
     strictPort: true,
+    // A production build writes dist/ inside the project; without this the
+    // dev server saw dist/index.html change and reloaded the open page.
+    watch: { ignored: ["**/dist/**"] },
   },
 });

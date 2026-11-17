@@ -3,9 +3,12 @@ import { createPortal } from "react-dom";
 import maplibregl, { Map, MapMouseEvent } from "maplibre-gl";
 import { Protocol } from "pmtiles";
 import {
-  BASEMAPS, BasemapKey, Bounds, PINCH_MAX_DETOUR_M, PINCH_NO_ALTERNATIVE_M, STYLES,
-  Score, humanMiles, humanNumber, humanSeconds, percentileOf,
-  rankSentence, roadTypeLabel, splitNames,
+  BASEMAPS, BUILDING_COLOR, BUILDING_OUTLINE, BasemapKey, Bounds, CUT_OFF_CLASS,
+  HAZARD_BUILDING_COLORS, HazardBuildingStatus, HAZARD_WORDS, Hazard, ISOLATION_CUTOFFS,
+  MIN_RANKED, PINCH_MAX_DETOUR_M, PINCH_NO_ALTERNATIVE_M, SERVICES_URL, SERVICE_INK, SERVICE_KINDS,
+  STYLES, Score, ServiceKind, humanMiles,
+  humanNumber, humanPercent, humanSeconds, milesInWords, percentileOf, rankSentence,
+  roadTypeLabel, splitNames,
 } from "./config";
 
 // QGIS line widths are in millimetres on a printed page; the map works in
@@ -19,7 +22,9 @@ const WIDTH_GAIN = 2.6;
 // The view the page opened with, taken from the URL hash, or null when the
 // hash does not carry one. Reading it once at module load means a reload or a
 // shared link comes back to the same place rather than to the county centre.
-export function viewFromUrl(): { lon: number; lat: number; zoom: number } | null {
+// Not exported: a component file that also exports a plain function cannot be
+// hot-reloaded by React Fast Refresh, so map changes would reload the page.
+function viewFromUrl(): { lon: number; lat: number; zoom: number } | null {
   const p = new URLSearchParams(window.location.hash.replace(/^#/, ""));
   const lon = Number(p.get("lon")), lat = Number(p.get("lat")), zoom = Number(p.get("zoom"));
   const ok = p.get("lon") != null && p.get("lat") != null && p.get("zoom") != null
@@ -41,7 +46,7 @@ const ZOOM_SCALE: [number, number][] = [
 
 function widthExpression(classField: string, classes: { value: number; widthMm: number }[]) {
   // match on the class column -> the QML width, then scale by zoom.
-  const match: any[] = ["match", ["get", classField]];
+  const match: any[] = ["match", classOf(classField)];
   for (const c of classes) match.push(c.value, c.widthMm * MM_TO_PX * WIDTH_GAIN);
   match.push(0.4);   // anything outside 1..10: barely there, mirroring "no all other values"
   const interp: any[] = ["interpolate", ["linear"], ["zoom"]];
@@ -50,7 +55,7 @@ function widthExpression(classField: string, classes: { value: number; widthMm: 
 }
 
 function colorExpression(classField: string, classes: { value: number; color: string }[]) {
-  const match: any[] = ["match", ["get", classField]];
+  const match: any[] = ["match", classOf(classField)];
   for (const c of classes) match.push(c.value, c.color);
   match.push("rgba(0,0,0,0)");   // out of range draws nothing, as in the QML
   return match;
@@ -92,19 +97,222 @@ const HOVER_LAYERS: any[] = [
 
 const EMPTY_FC: GeoJSON.FeatureCollection = { type: "FeatureCollection", features: [] };
 
+// The class a road is drawn in. On the functional isolation tab the analysis
+// keeps two separate flags: is_isolated for roads cut off completely (already
+// class 11 in the class columns) and is_blocked for the pieces inside the
+// hazard, which are closed and keep an ordinary rank measured from one of
+// their ends, often rank 1. Left that way, the flooded roads look untouched.
+// The viewer merges the two and draws a closed piece as cut off. On the other
+// tabs there is no is_blocked, so this is just the class column.
+const BLOCKED: any = ["any", ["==", ["get", "is_blocked"], true], ["==", ["get", "is_blocked"], 1]];
+function classOf(classField: string): any {
+  return ["case", BLOCKED, CUT_OFF_CLASS, ["coalesce", ["get", classField], 0]];
+}
+const classOfProps = (p: Record<string, any> | null | undefined, field: string) =>
+  isTrue(p?.is_blocked) ? CUT_OFF_CLASS : Number(p?.[field] ?? 0);
+
+// The slider hides the ranks below minClass. Roads cut off completely (class
+// 11 on the functional isolation tab) are not a rank but a different
+// condition, so they always stay.
+function classFilter(classField: string, minClass: number): any {
+  return minClass > 1
+    ? ["any",
+        [">=", classOf(classField), minClass],
+        ["==", classOf(classField), CUT_OFF_CLASS]]
+    : ["all"];
+}
+
 function hitLayer(sourceLayer: string, classField: string, minClass: number): any {
   return {
     id: "roads-hit",
     type: "line",
     source: "roads",
     "source-layer": sourceLayer,
-    filter: (minClass > 1
-      ? [">=", ["coalesce", ["get", classField], 0], minClass]
-      : ["all"]),
+    filter: classFilter(classField, minClass),
     layout: { "line-cap": "round", "line-join": "round" },
     paint: { "line-color": "#000", "line-opacity": 0, "line-width": HIT_WIDTH },
   };
 }
+
+// The coloured roads, plus on the functional isolation tab a white casing
+// under the roads cut off completely or closed, and the hazard drawn over
+// everything.
+//
+// The casing is there because a dark red loses contrast on the dark gray
+// basemap. The first style, ColorBrewer's darkest red, measured 11.5 to 1 on
+// light gray but only 1.43 to 1 on dark gray, and a white line 1.6 times as
+// wide under it lifted that to 9.3. The current red (165,15,21, which the
+// user asked for because the darkest one read as brown) works out at about
+// 6.8 and 2.4 before the casing. It is drawn as its own layer, like the hover
+// glow, rather than by changing the palette.
+//
+// The hazard sits on top of the roads in charcoal hatching with a white rim:
+// nothing in the blue to orange ramp, and nothing near the red of class 11.
+// The hatching lets the closed roads inside it still show through.
+function roadLayers(sourceLayer: string, classField: string, minClass: number, opacity: number,
+                    hazard: boolean): any[] {
+  const classes = STYLES[classField]?.classes ?? [];
+  const layers: any[] = [];
+  if (hazard) {
+    layers.push({
+      id: "roads-casing", type: "line", source: "roads", "source-layer": sourceLayer,
+      filter: ["==", classOf(classField), CUT_OFF_CLASS],
+      layout: { "line-cap": "round", "line-join": "round" },
+      paint: { "line-color": "#ffffff", "line-width": casingWidth(classes), "line-opacity": opacity },
+    });
+  }
+  layers.push({
+    id: "roads-line", type: "line", source: "roads", "source-layer": sourceLayer,
+    filter: classFilter(classField, minClass),
+    layout: {
+      "line-cap": "round",
+      "line-join": "round",
+      // The QML sets symbol levels so class 10 draws over class 1.
+      // line-sort-key is the same idea: higher sorts later, so the top
+      // classes end up on top instead of being buried.
+      "line-sort-key": classOf(classField),
+    },
+    paint: {
+      "line-color": colorExpression(classField, classes),
+      "line-width": widthExpression(classField, classes),
+      "line-opacity": opacity,
+    },
+  });
+  if (hazard) {
+    layers.push(
+      // A light charcoal tint under the hatching, so the shape reads at a
+      // glance as one area rather than as loose stripes.
+      {
+        id: "hazard-tint", type: "fill", source: "roads", "source-layer": "hazard",
+        paint: { "fill-color": HAZARD_INK, "fill-opacity": 0.14 },
+      },
+      {
+        id: "hazard-fill", type: "fill", source: "roads", "source-layer": "hazard",
+        paint: { "fill-pattern": "hazard-hatch", "fill-opacity": 0.95 },
+      },
+      {
+        id: "hazard-rim", type: "line", source: "roads", "source-layer": "hazard",
+        layout: { "line-join": "round" },
+        paint: { "line-color": "#ffffff", "line-width": 7, "line-opacity": 0.95 },
+      },
+      {
+        id: "hazard-line", type: "line", source: "roads", "source-layer": "hazard",
+        layout: { "line-join": "round" },
+        paint: { "line-color": HAZARD_INK, "line-width": 3 },
+      },
+      // The buildings the hazard floods and cuts off, over everything else
+      // the run draws, the cut-off ones on top (the user's order). Overture's
+      // other buildings stay under the roads.
+      // Each with a white halo and a dark edge, so a small footprint stands
+      // out against the red roads and the hatching it often sits on.
+      ...(["in_hazard", "cut_off"] as HazardBuildingStatus[]).flatMap((k) => [
+        {
+          id: `hazard-bldg-${k}-halo`, type: "line", source: "roads", "source-layer": "hazard_buildings",
+          filter: ["==", ["get", "status"], k],
+          layout: { "line-join": "round" },
+          paint: { "line-color": "#ffffff", "line-width": ["interpolate", ["linear"], ["zoom"], 12, 1.5, 16, 4] },
+        },
+        {
+          id: `hazard-bldg-${k}`, type: "fill", source: "roads", "source-layer": "hazard_buildings",
+          filter: ["==", ["get", "status"], k],
+          paint: { "fill-color": HAZARD_BUILDING_COLORS[k], "fill-opacity": 1 },
+        },
+        {
+          id: `hazard-bldg-${k}-edge`, type: "line", source: "roads", "source-layer": "hazard_buildings",
+          filter: ["==", ["get", "status"], k],
+          layout: { "line-join": "round" },
+          paint: { "line-color": "#141414", "line-width": ["interpolate", ["linear"], ["zoom"], 12, 0.6, 16, 1.6] },
+        },
+      ]),
+    );
+  }
+  layers.push(hitLayer(sourceLayer, classField, minClass));
+  return layers;
+}
+const HAZARD_BLDG_LAYERS = (k: HazardBuildingStatus) =>
+  [`hazard-bldg-${k}-halo`, `hazard-bldg-${k}`, `hazard-bldg-${k}-edge`];
+const ROAD_LAYER_IDS = [...HAZARD_BLDG_LAYERS("in_hazard"), ...HAZARD_BLDG_LAYERS("cut_off"),
+  "roads-casing", "roads-line", "hazard-tint", "hazard-fill", "hazard-rim", "hazard-line", "roads-hit"];
+
+const HAZARD_INK = "#23272e";
+
+function casingWidth(classes: { value: number; widthMm: number }[]): any {
+  const mm = classes.find((c) => c.value === CUT_OFF_CLASS)?.widthMm ?? 1;
+  const interp: any[] = ["interpolate", ["linear"], ["zoom"]];
+  for (const [z, f] of ZOOM_SCALE) interp.push(z, mm * MM_TO_PX * WIDTH_GAIN * f * 1.6);
+  return interp;
+}
+
+// Diagonal hatching for the hazard: a charcoal stripe with a thin white edge
+// on each side, on transparent, so it reads on the light and dark basemaps
+// alike. Made here as pixels rather than shipped as an image file.
+function hatchImage(): { width: number; height: number; data: Uint8Array } {
+  const size = 10;
+  const data = new Uint8Array(size * size * 4);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const d = (x + y) % size;
+      const i = (y * size + x) * 4;
+      if (d <= 2) data.set([35, 39, 46, 245], i);
+      else if (d === 3 || d === size - 1) data.set([255, 255, 255, 200], i);
+    }
+  }
+  return { width: size, height: size, data };
+}
+
+// A service's map icon: the filled Material icon in Night Sky inside a white
+// circle with a thin Night Sky ring, drawn at twice the size it shows so it
+// stays sharp on high-density screens.
+function serviceImage(paths: string[]): { width: number; height: number; data: Uint8Array } {
+  const ratio = 2, size = 32 * ratio;
+  const c = document.createElement("canvas");
+  c.width = c.height = size;
+  const g = c.getContext("2d")!;
+  g.scale(ratio, ratio);
+  g.beginPath();
+  g.arc(16, 16, 14.6, 0, Math.PI * 2);
+  g.fillStyle = "#ffffff";
+  g.fill();
+  g.lineWidth = 1.6;
+  g.strokeStyle = SERVICE_INK;
+  g.stroke();
+  g.translate(5.2, 5.2);
+  g.scale(0.9, 0.9);
+  g.fillStyle = SERVICE_INK;
+  for (const d of paths) g.fill(new Path2D(d));
+  return { width: size, height: size, data: new Uint8Array(g.getImageData(0, 0, size, size).data.buffer) };
+}
+
+// Shade everything outside the study area: a polygon covering the
+// world with the study area cut out of it. A hole has to wind the opposite
+// way to its outer ring for MapLibre to cut it, so the ring is turned round
+// when it runs the same way.
+function maskData(h: Hazard | null | undefined): GeoJSON.FeatureCollection {
+  if (!h) return EMPTY_FC;
+  const outer: [number, number][] = [[-180, -85], [180, -85], [180, 85], [-180, 85], [-180, -85]];
+  const area = (r: [number, number][]) =>
+    r.reduce((s, [x1, y1], i) => { const [x2, y2] = r[(i + 1) % r.length]; return s + x1 * y2 - x2 * y1; }, 0);
+  const ring = area(h.studyArea) > 0 ? [...h.studyArea].reverse() : h.studyArea;
+  return {
+    type: "FeatureCollection",
+    features: [{ type: "Feature", properties: {}, geometry: { type: "Polygon", coordinates: [outer, ring] } }],
+  };
+}
+
+// The hazard's middle, for a marker that finds it when zoomed out. Some
+// hazards are a few hundred metres across and vanish at county scale.
+function markerData(h: Hazard | null | undefined): GeoJSON.FeatureCollection {
+  if (!h) return EMPTY_FC;
+  const [w, s, e, n] = h.hazardBounds;
+  return {
+    type: "FeatureCollection",
+    features: [{ type: "Feature", properties: {}, geometry: { type: "Point", coordinates: [(w + e) / 2, (s + n) / 2] } }],
+  };
+}
+
+// Darker on the dark basemap, where a light wash would read as a highlight.
+const maskColor = (basemap: BasemapKey) =>
+  basemap === "darkgray" ? "rgba(0, 0, 0, 0.42)" : "rgba(20, 30, 45, 0.24)";
 
 interface Props {
   tilesUrl: string;             // pmtiles file to draw
@@ -132,6 +340,15 @@ interface Props {
   onGuideAway?: () => boolean;
   // The map closed the guide popup itself, by a click it let through.
   onGuideClosed?: () => void;
+  // On the functional isolation tab, the hazard being shown: drawn over the
+  // roads, named in the popups, and its study area left clear of the shade.
+  hazard?: Hazard | null;
+  // Overture's buildings PMTiles, or null to hide them.
+  buildingsUrl?: string | null;
+  // The services to show as icons (Detours tab), or null for none.
+  services?: ServiceKind[] | null;
+  // Which of the hazard's buildings to draw.
+  hazardBuildings?: HazardBuildingStatus[];
 }
 
 // One road to travel to and open the guide popup on. `key` changes when the
@@ -153,7 +370,8 @@ const FULL_EXTENT_ICON = `<svg viewBox="0 0 24 24" width="19" height="19" fill="
 export default function MapView({
   tilesUrl, sourceLayer, classField, score, basemap, opacity, minClass, center, zoom, flyKey,
   countyKey, onEmptyChange, fullBounds, fullLabel, focus, onFocusFeature, onInteract,
-  guide, onGuideAway, onGuideClosed,
+  guide, onGuideAway, onGuideClosed, hazard = null, buildingsUrl = null, services = null,
+  hazardBuildings = ["cut_off", "in_hazard"],
 }: Props) {
   const div = useRef<HTMLDivElement>(null);
   const map = useRef<Map | null>(null);
@@ -161,8 +379,14 @@ export default function MapView({
   const hover = useRef<maplibregl.Popup | null>(null);    // follows the cursor
   const pinned = useRef<maplibregl.Popup | null>(null);   // left by a click
   // the current props, read by handlers that are registered once
-  const latest = useRef({ tilesUrl, sourceLayer, classField, score, basemap, opacity, minClass, countyKey });
-  latest.current = { tilesUrl, sourceLayer, classField, score, basemap, opacity, minClass, countyKey };
+  const latest = useRef({ tilesUrl, sourceLayer, classField, score, basemap, opacity, minClass, countyKey, hazard, hazardBuildings });
+  latest.current = { tilesUrl, sourceLayer, classField, score, basemap, opacity, minClass, countyKey, hazard, hazardBuildings };
+  const roadHtml = (p: Record<string, any>) => {
+    const l = latest.current;
+    return l.hazard
+      ? describeIsolation(p, l.classField, l.score, l.hazard)
+      : describe(p, l.classField, l.score, l.countyKey);
+  };
   const emptyCb = useRef(onEmptyChange);
   emptyCb.current = onEmptyChange;
   const focusCb = useRef(onFocusFeature);
@@ -201,8 +425,11 @@ export default function MapView({
   // buttons are, stays put from step to step. The room above the road is
   // handed to the guide as --guide-room, so a step too tall for it scrolls
   // inside the popup instead.
+  //
+  // `html`, when given, is shown in place of the road's numbers, with no glow:
+  // that is the hazard's own popup.
   const pin = (m: Map, lngLat: maplibregl.LngLatLike, hit: maplibregl.MapGeoJSONFeature | null,
-               asGuide = false) => {
+               asGuide = false, html?: string, className?: string) => {
     const glow = m.getSource("hover") as maplibregl.GeoJSONSource | undefined;
     hover.current?.remove();
     pinned.current?.remove();
@@ -213,7 +440,7 @@ export default function MapView({
     const p = new maplibregl.Popup(asGuide
       ? { closeButton: false, closeOnClick: false, maxWidth: "400px", offset: 14,
           className: "guide-popup", anchor: "bottom" }
-      : { closeButton: true, maxWidth: "540px", offset: 12 })
+      : { closeButton: true, maxWidth: "540px", offset: 12, ...(className ? { className } : {}) })
       .setLngLat(lngLat);
     const host = asGuide ? document.createElement("div") : null;
     // offset 14, tip 10, a 10 px margin at the top, and the popup's own
@@ -227,8 +454,7 @@ export default function MapView({
       m.on("move", fit);
       m.on("resize", fit);
     } else {
-      p.setHTML(describe(hit?.properties ?? {}, latest.current.classField, latest.current.score,
-        latest.current.countyKey));
+      p.setHTML(html ?? roadHtml(hit?.properties ?? {}));
     }
     p.addTo(m);
     p.on("close", () => {
@@ -286,37 +512,30 @@ export default function MapView({
           ...baseSources,
           roads: { type: "vector", url: `pmtiles://${tilesUrl}` },
           hover: { type: "geojson", data: EMPTY_FC },
+          mask: { type: "geojson", data: maskData(hazard) },
+          "hazard-point": { type: "geojson", data: markerData(hazard) },
         },
         layers: [
           ...baseLayers,
+          // the shade outside the study area, over the basemap and under
+          // everything drawn from the data
+          { id: "mask-fill", type: "fill", source: "mask", paint: { "fill-color": maskColor(basemap) } },
           // beneath the coloured road, so the road's own class colour still
           // shows through the middle of the glow
           ...HOVER_LAYERS,
+          // Built into the style rather than set afterwards, for the same
+          // reason as the basemap above: the first paint is already correct.
+          ...roadLayers(sourceLayer, classField, minClass, opacity, hazard != null),
           {
-            id: "roads-line",
-            type: "line",
-            source: "roads",
-            "source-layer": sourceLayer,
-            // Built into the style rather than set afterwards, for the same
-            // reason as the basemap above: the first paint is already correct.
-            filter: (minClass > 1
-              ? [">=", ["coalesce", ["get", classField], 0], minClass]
-              : ["all"]) as any,
-            layout: {
-              "line-cap": "round",
-              "line-join": "round",
-              // The QML sets symbol levels so class 10 draws over class 1.
-              // line-sort-key is the same idea: higher sorts later, so the
-              // top classes end up on top instead of being buried.
-              "line-sort-key": ["coalesce", ["get", classField], 0],
-            },
+            id: "hazard-marker", type: "circle", source: "hazard-point",
             paint: {
-              "line-color": colorExpression(classField, STYLES[classField]?.classes ?? []) as any,
-              "line-width": widthExpression(classField, STYLES[classField]?.classes ?? []) as any,
-              "line-opacity": opacity,
+              "circle-radius": 7, "circle-color": HAZARD_INK,
+              "circle-stroke-color": "#ffffff", "circle-stroke-width": 2.5,
+              // gone by the time the hazard itself is big enough to see
+              "circle-opacity": ["interpolate", ["linear"], ["zoom"], 11, 1, 12, 0],
+              "circle-stroke-opacity": ["interpolate", ["linear"], ["zoom"], 11, 1, 12, 0],
             },
           },
-          hitLayer(sourceLayer, classField, minClass),
         ],
       },
       // A guided example opens already on its road, so the first thing on
@@ -327,6 +546,14 @@ export default function MapView({
       // Keeps the drawing buffer readable after each frame, so the canvas can
       // be captured. Without it a screenshot of the map comes back blank.
       preserveDrawingBuffer: true,
+    });
+
+    // The hazard's hatching is made in code, and added the first time a layer
+    // asks for it.
+    m.on("styleimagemissing", (e: { id: string }) => {
+      if (e.id === "hazard-hatch" && !m.hasImage("hazard-hatch")) m.addImage("hazard-hatch", hatchImage());
+      const svc = SERVICE_KINDS.find((k) => e.id === `svc-${k.id}`);
+      if (svc && !m.hasImage(e.id)) m.addImage(e.id, serviceImage(svc.paths), { pixelRatio: 2 });
     });
 
     m.addControl(new maplibregl.NavigationControl({ showCompass: true, showZoom: true }), "top-right");
@@ -395,8 +622,31 @@ export default function MapView({
       // is calling most important, which is also the one drawn on top.
       const field = latest.current.classField;
       return hits.reduce((best, f) =>
-        Number(f.properties?.[field] ?? 0) > Number(best.properties?.[field] ?? 0) ? f : best);
+        classOfProps(f.properties, field) > classOfProps(best.properties, field) ? f : best);
     };
+
+    // The hazard under the cursor: its area, or the marker that stands in for
+    // it when zoomed out. The area answers only where no road does, since the
+    // closed roads inside it have popups of their own. The marker is drawn
+    // over the roads, so it answers first, but only while it can be seen: it
+    // has faded out by zoom 12 and queryRenderedFeatures would still find it.
+    const hazardBox = (e: MapMouseEvent, layer: string, r: number) => {
+      if (!latest.current.hazard || !m.getLayer(layer)) return false;
+      return m.queryRenderedFeatures(
+        [[e.point.x - r, e.point.y - r], [e.point.x + r, e.point.y + r]], { layers: [layer] }).length > 0;
+    };
+    // A service icon under the cursor. Icons sit on top of everything, so
+    // they answer before the roads.
+    const pickService = (e: MapMouseEvent) => {
+      if (!m.getLayer("services") || m.getLayoutProperty("services", "visibility") === "none") return null;
+      const hits = m.queryRenderedFeatures(
+        [[e.point.x - 2, e.point.y - 2], [e.point.x + 2, e.point.y + 2]], { layers: ["services"] });
+      return hits[0] ?? null;
+    };
+    const pickMarker = (e: MapMouseEvent) =>
+      m.getZoom() < 12 && hazardBox(e, "hazard-marker", 2) ? latest.current.hazard : null;
+    const pickHazard = (e: MapMouseEvent) =>
+      hazardBox(e, "hazard-fill", PICK_RADIUS) ? latest.current.hazard : null;
 
     // Whether the guide popup is pinned and can actually be seen. Once the
     // reader has dragged it off screen it no longer gets a say: hover and
@@ -408,8 +658,11 @@ export default function MapView({
     };
 
     m.on("mousemove", (e: MapMouseEvent) => {
-      const hit = pick(e);
-      m.getCanvas().style.cursor = hit ? "pointer" : "";
+      const svc = pickService(e);
+      const marker = svc ? null : pickMarker(e);
+      const hit = svc || marker ? null : pick(e);
+      const hz = marker ?? (hit || svc ? null : pickHazard(e));
+      m.getCanvas().style.cursor = hit || hz || svc ? "pointer" : "";
       // A pinned popup from a click wins: the hover one would sit on top of it
       // and fight for the same space.
       const glow = m.getSource("hover") as maplibregl.GeoJSONSource | undefined;
@@ -417,15 +670,17 @@ export default function MapView({
         hover.current?.remove();
         return;
       }
-      if (!hit) {
+      if (!hit && !hz && !svc) {
         hover.current?.remove();
         glow?.setData(EMPTY_FC);
         return;
       }
       interactCb.current?.();
-      glow?.setData({ type: "FeatureCollection", features: [{ type: "Feature", geometry: hit.geometry, properties: {} }] });
-      const html = describe(hit.properties ?? {}, latest.current.classField, latest.current.score,
-        latest.current.countyKey);
+      glow?.setData(hit
+        ? { type: "FeatureCollection", features: [{ type: "Feature", geometry: hit.geometry, properties: {} }] }
+        : EMPTY_FC);
+      const html = svc ? describeService(svc.properties ?? {})
+        : hit ? roadHtml(hit.properties ?? {}) : describeHazard(hz!);
       if (!hover.current) {
         hover.current = new maplibregl.Popup({
           closeButton: false, closeOnClick: false, maxWidth: "540px",
@@ -433,6 +688,11 @@ export default function MapView({
         });
       }
       hover.current.setLngLat(e.lngLat).setHTML(html).addTo(m);
+      // The hazard's popup is charcoal, so it never reads as a road's. Set
+      // after addTo: before its first addTo a popup has no element to take
+      // the class, and the hazard's white text then sat on white.
+      if (!hit && !svc) hover.current.addClassName("hazard-pop");
+      else hover.current.removeClassName("hazard-pop");
     });
 
     // Leaving the canvas entirely, which mousemove never reports. That
@@ -458,8 +718,16 @@ export default function MapView({
         if (e.originalEvent.detail > 1) return;
         if (awayCb.current?.()) return;
       }
-      const hit = pick(e);
-      if (!hit) {
+      const svc = pickService(e);
+      const marker = svc ? null : pickMarker(e);
+      const hit = svc || marker ? null : pick(e);
+      const hz = marker ?? (hit || svc ? null : pickHazard(e));
+      if (svc) {
+        interactCb.current?.();
+        pin(m, e.lngLat, null, false, describeService(svc.properties ?? {}));
+        return;
+      }
+      if (!hit && !hz) {
         hover.current?.remove();
         pinned.current?.remove();
         pinned.current = null;
@@ -467,7 +735,8 @@ export default function MapView({
         return;
       }
       interactCb.current?.();
-      pin(m, e.lngLat, hit);
+      if (hit) pin(m, e.lngLat, hit);
+      else pin(m, e.lngLat, null, false, describeHazard(hz!), "hazard-pop");
     });
 
     map.current = m;
@@ -475,32 +744,92 @@ export default function MapView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Swapping counties means a different tile file. MapLibre cannot repoint a
-  // vector source's url, so the source and its layer are rebuilt.
+  // Swapping counties or hazards means a different tile file. MapLibre cannot
+  // repoint a vector source's url, so the source and its layers are rebuilt,
+  // each slotted back in under the hazard marker.
   useEffect(() => {
     const m = map.current;
     if (!m || !ready.current) return;
-    if (m.getLayer("roads-hit")) m.removeLayer("roads-hit");
-    if (m.getLayer("roads-line")) m.removeLayer("roads-line");
+    for (const id of ROAD_LAYER_IDS) if (m.getLayer(id)) m.removeLayer(id);
     if (m.getSource("roads")) m.removeSource("roads");
     m.addSource("roads", { type: "vector", url: `pmtiles://${tilesUrl}` } as any);
-    m.addLayer({
-      id: "roads-line", type: "line", source: "roads", "source-layer": sourceLayer,
-      filter: (minClass > 1
-        ? [">=", ["coalesce", ["get", classField], 0], minClass]
-        : ["all"]),
-      layout: { "line-cap": "round", "line-join": "round", "line-sort-key": ["coalesce", ["get", classField], 0] },
-      paint: {
-        "line-color": colorExpression(classField, STYLES[classField]?.classes ?? []) as any,
-        "line-width": widthExpression(classField, STYLES[classField]?.classes ?? []) as any,
-        "line-opacity": opacity,
-      },
-    } as any);
-    m.addLayer(hitLayer(sourceLayer, classField, minClass));
+    for (const layer of roadLayers(sourceLayer, classField, minClass, opacity, hazard != null)) {
+      m.addLayer(layer, "hazard-marker");
+    }
     wasEmpty.current = null;   // re-answered on the next idle
     apply(m);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tilesUrl, sourceLayer]);
+
+  // Overture's buildings: added the first time they are asked for, then only
+  // shown or hidden. They sit over the shade and under the hover glow and the
+  // roads, so the analysis is always drawn on top of them.
+  useEffect(() => {
+    const m = map.current;
+    if (!m) return;
+    const run = () => {
+      if (buildingsUrl && !m.getSource("ov-buildings")) {
+        m.addSource("ov-buildings", {
+          type: "vector", url: `pmtiles://${buildingsUrl}`,
+          attribution: "Buildings: Overture Maps Foundation",
+        } as any);
+        m.addLayer({
+          id: "ov-buildings", type: "fill", source: "ov-buildings", "source-layer": "building",
+          paint: { "fill-color": BUILDING_COLOR, "fill-opacity": 0.95, "fill-outline-color": BUILDING_OUTLINE },
+        } as any, "roads-hover-outer");
+      }
+      if (m.getLayer("ov-buildings")) {
+        m.setLayoutProperty("ov-buildings", "visibility", buildingsUrl ? "visible" : "none");
+      }
+    };
+    if (ready.current) run();
+    else m.on("load", run);
+    return () => { m.off("load", run); };
+  }, [buildingsUrl]);
+
+  // The services on the Detours tab: loaded the first time they are shown,
+  // then filtered to the kinds ticked in the panel. On top of everything, so
+  // an icon is never hidden under a road.
+  const serviceKey = services ? services.join(",") : "";
+  useEffect(() => {
+    const m = map.current;
+    if (!m) return;
+    const run = () => {
+      const on = services != null && services.length > 0;
+      if (on && !m.getSource("services")) {
+        m.addSource("services", { type: "geojson", data: new URL(SERVICES_URL, document.baseURI).href });
+        m.addLayer({
+          id: "services", type: "symbol", source: "services",
+          layout: {
+            "icon-image": ["concat", "svc-", ["get", "kind"]],
+            "icon-size": ["interpolate", ["linear"], ["zoom"], 9, 0.55, 12, 0.75, 15, 1],
+            // Where icons crowd, as in a town centre zoomed out, some give way
+            // and come back as the map zooms in.
+            "icon-allow-overlap": false,
+            "icon-padding": 1,
+          },
+        } as any);
+      }
+      if (m.getLayer("services")) {
+        m.setFilter("services", ["in", ["get", "kind"], ["literal", services ?? []]] as any);
+        m.setLayoutProperty("services", "visibility", on ? "visible" : "none");
+        m.moveLayer("services");
+      }
+    };
+    if (ready.current) run();
+    else m.on("load", run);
+    return () => { m.off("load", run); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [serviceKey, services == null]);
+
+  // The shade outside the study area and the marker on the hazard follow the
+  // hazard being shown, and are emptied on the other tabs.
+  useEffect(() => {
+    const m = map.current;
+    if (!m || !ready.current) return;
+    (m.getSource("mask") as maplibregl.GeoJSONSource | undefined)?.setData(maskData(hazard));
+    (m.getSource("hazard-point") as maplibregl.GeoJSONSource | undefined)?.setData(markerData(hazard));
+  }, [hazard]);
 
   // Shut any popup when the thing it describes changes underneath it.
   //
@@ -526,14 +855,25 @@ export default function MapView({
       m.setPaintProperty("roads-line", "line-color", colorExpression(classField, classes) as any);
       m.setPaintProperty("roads-line", "line-width", widthExpression(classField, classes) as any);
       m.setPaintProperty("roads-line", "line-opacity", opacity);
-      m.setLayoutProperty("roads-line", "line-sort-key", ["coalesce", ["get", classField], 0] as any);
-      const filter = (minClass > 1
-        ? [">=", ["coalesce", ["get", classField], 0], minClass]
-        : ["all"]) as any;
+      m.setLayoutProperty("roads-line", "line-sort-key", classOf(classField));
+      const filter = classFilter(classField, minClass);
       m.setFilter("roads-line", filter);
       // The hit layer tracks the same filter: a class hidden by the slider
       // must not still answer the cursor.
       if (m.getLayer("roads-hit")) m.setFilter("roads-hit", filter);
+    }
+    if (m.getLayer("roads-casing")) {
+      m.setFilter("roads-casing", ["==", classOf(classField), CUT_OFF_CLASS]);
+      m.setPaintProperty("roads-casing", "line-width", casingWidth(classes));
+      m.setPaintProperty("roads-casing", "line-opacity", opacity);
+    }
+    if (m.getLayer("mask-fill")) m.setPaintProperty("mask-fill", "fill-color", maskColor(basemap));
+    for (const k of ["in_hazard", "cut_off"] as HazardBuildingStatus[]) {
+      for (const id of HAZARD_BLDG_LAYERS(k)) {
+        if (m.getLayer(id)) {
+          m.setLayoutProperty(id, "visibility", latest.current.hazardBuildings.includes(k) ? "visible" : "none");
+        }
+      }
     }
     for (const k of Object.keys(BASEMAPS) as BasemapKey[]) {
       m.setLayoutProperty(`base-${k}`, "visibility", k === basemap ? "visible" : "none");
@@ -542,7 +882,7 @@ export default function MapView({
   useEffect(() => {
     if (map.current && ready.current) apply(map.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [classField, basemap, opacity, minClass]);
+  }, [classField, basemap, opacity, minClass, hazardBuildings.join(",")]);
 
   // Move the view when the tab or county actually changes.
   //
@@ -602,11 +942,17 @@ export default function MapView({
       const hits = m.queryRenderedFeatures(
         [[pt.x - R, pt.y - R], [pt.x + R, pt.y + R]], { layers: ["roads-hit"] });
       const named = hits.filter((f) => String(f.properties?.road_name ?? "").includes(target.road));
-      const pool = named.length ? named : [];
+      // On the functional isolation tab a road is split where it meets the
+      // hazard, and the short pieces beside it can carry very different
+      // numbers. The example is the piece at the point, so the nearest piece
+      // outside the hazard is taken rather than the highest ranked one.
+      const pool = latest.current.hazard ? named.filter((f) => !isTrue(f.properties?.is_blocked)) : named;
       if (pool.length) {
         const field = latest.current.classField;
-        const best = pool.reduce((a, f) =>
-          Number(f.properties?.[field] ?? 0) > Number(a.properties?.[field] ?? 0) ? f : a);
+        const best = latest.current.hazard
+          ? pool.reduce((a, f) => (screenDistance(m, pt, f) < screenDistance(m, pt, a) ? f : a))
+          : pool.reduce((a, f) =>
+              classOfProps(f.properties, field) > classOfProps(a.properties, field) ? f : a);
         m.off("idle", look);
         pin(m, target.lngLat, best, true);
         focusCb.current?.(target.key, best.properties ?? {});
@@ -654,7 +1000,7 @@ function describe(p: Record<string, any>, classField: string, score: Score,
   const type = roadTypeLabel(p.class);
   const isPinch = p.pinch_score != null || p.detour_len_m != null;
 
-  const sections: { heading: string; rows?: [string, string][]; lines?: string[] }[] = [];
+  const sections: Section[] = [];
   let footnote = "";
 
   if (isPinch) {
@@ -777,22 +1123,211 @@ function describe(p: Record<string, any>, classField: string, score: Score,
     }
   }
 
-  const swatch = style
-    ? `<span style="display:inline-block;width:20px;height:4px;background:${style.color};`
-      + `vertical-align:middle;margin-right:7px;border-radius:2px"></span>`
-    : "";
   const rank = style
-    ? `${swatch}Ranked <b>${cls} of 10</b>`
+    ? `${swatch(style.color)}Ranked <b>${cls} of 10</b>`
       + `${cls === 10 ? " (highest)" : cls === 1 ? " (lowest)" : ""}`
       + ` for ${escapeHtml(score.label.toLowerCase())}`
     : "Not ranked on this measure";
 
-  const body = sections.map(({ heading, rows, lines }) => {
+  return renderPopup(primary, type, rank, sections, footnote, isPinch ? 470 : 510);
+}
+
+// `lead` sets the first line in bold, for the one sentence a section is for.
+type Section = { heading: string; rows?: [string, string][]; lines?: string[]; lead?: boolean };
+
+const swatch = (color: string) =>
+  `<span style="display:inline-block;width:20px;height:4px;background:${color};`
+  + `vertical-align:middle;margin-right:7px;border-radius:2px"></span>`;
+
+const isTrue = (v: unknown) => v === true || v === 1 || v === "true" || v === "1";
+
+// How far a road is from a point on screen, in pixels.
+function screenDistance(m: Map, pt: maplibregl.Point, f: maplibregl.MapGeoJSONFeature): number {
+  const g = f.geometry;
+  const lines = g.type === "LineString" ? [g.coordinates]
+    : g.type === "MultiLineString" ? g.coordinates : [];
+  let best = Infinity;
+  for (const line of lines) {
+    for (let i = 0; i < line.length - 1; i++) {
+      const a = m.project(line[i] as [number, number]);
+      const b = m.project(line[i + 1] as [number, number]);
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const t = Math.max(0, Math.min(1, ((pt.x - a.x) * dx + (pt.y - a.y) * dy) / (dx * dx + dy * dy || 1)));
+      best = Math.min(best, Math.hypot(pt.x - (a.x + t * dx), pt.y - (a.y + t * dy)));
+    }
+  }
+  return best;
+}
+
+// The popup for one road on the functional isolation tab.
+//
+// Built around one question: how much of what this road could reach within a
+// short drive can it still reach once the hazard closes the roads it covers?
+// The chosen drive time leads, as whole sentences, and the other two follow
+// one line each, so the reader sees the shape: close by unchanged and
+// farther out cut back, or the reverse. A road cut off completely, or a piece
+// inside the hazard, says that first.
+function describeIsolation(p: Record<string, any>, classField: string, score: Score,
+                           hazard: Hazard): string {
+  const w = HAZARD_WORDS[hazard.kind];
+  const cls = Number(p[classField]);
+  const style = STYLES[classField]?.classes.find((c) => c.value === cls);
+  const { primary } = splitNames(p.road_name);
+  const type = roadTypeLabel(p.class);
+  const minutes = score.minutes ?? 15;
+  const blocked = isTrue(p.is_blocked);
+  const isolated = isTrue(p.is_isolated) || cls === CUT_OFF_CLASS;
+  const loss = Number(p[`loss_${minutes}m`] ?? 0);
+  const losing = hazard.losing[String(minutes)] ?? 0;
+  const sections: Section[] = [];
+  const buildings = (n: number) => `${humanNumber(n)} ${n === 1 ? "building" : "buildings"}`;
+
+  // A road that reaches no buildings even before the hazard, at the longest
+  // drive time, is not joined to the rest of the network in the data (mostly
+  // driveways). It has nothing to lose, so it lands in rank 1, and "no loss"
+  // would read as though the hazard spared it.
+  const longest = ISOLATION_CUTOFFS[ISOLATION_CUTOFFS.length - 1];
+  if (!blocked && !isolated && p[`bld_${longest}m_baseline`] != null
+      && Number(p[`bld_${longest}m_baseline`]) === 0) {
+    return renderPopup(primary, type, `${style ? swatch(style.color) : ""}Not part of this measure`, [{
+      heading: "Not joined to the road network",
+      lines: [
+        `This road reaches no buildings in the data, even before ${w.event}.`,
+        "It is not joined to the rest of the road network, as happens with many driveways, "
+          + "so there is nothing for this measure to count.",
+      ],
+    }], "", 470);
+  }
+
+  let rank: string;
+  if (blocked) {
+    rank = `${swatch(STYLES[classField]?.classes.find((c) => c.value === CUT_OFF_CLASS)?.color ?? "rgb(165, 15, 21)")}`
+      + `<b>Closed</b>, ${escapeHtml(w.inside)}`;
+  } else if (isolated) {
+    rank = `${swatch(style?.color ?? "rgb(165, 15, 21)")}<b>Cut off completely</b>`;
+  } else if (!(loss > 0)) {
+    rank = `${style ? swatch(style.color) : ""}No loss within ${minutes} minutes`;
+  } else if (losing < MIN_RANKED) {
+    // Too few roads lose anything at this drive time for ten ranks to mean
+    // anything, so no rank is claimed.
+    rank = `${style ? swatch(style.color) : ""}Not ranked: only ${humanNumber(losing)} `
+      + `${losing === 1 ? "road loses" : "roads lose"} anything within ${minutes} minutes`;
+  } else if (style) {
+    rank = `${swatch(style.color)}Ranked <b>${cls} of 10</b>`
+      + `${cls === 10 ? " (highest)" : cls === 1 ? " (lowest)" : ""}`
+      + ` for ${escapeHtml(score.label.toLowerCase())}`;
+  } else {
+    rank = "Not ranked on this measure";
+  }
+
+  if (blocked) {
+    sections.push({ heading: "Closed", lines: [
+      `This stretch is ${w.inside}, so it is closed.`,
+      "It is drawn dark red, like the roads cut off completely.",
+    ] });
+    return renderPopup(primary, type, rank, sections, "", 470);
+  }
+
+  if (isolated) {
+    const stranded = Number(p.isolated_buildings ?? 0);
+    sections.push({
+      heading: "Cut off completely",
+      lines: [`With ${w.closed} closed, there is no road out from here at any drive time.`
+        + (stranded > 0
+          ? ` ${buildings(stranded)} ${stranded === 1 ? "is" : "are"} cut off along with it.`
+          : "")],
+    });
+  }
+
+  const before = Number(p[`bld_${minutes}m_baseline`]);
+  const lost = Number(p[`lost_${minutes}m`] ?? 0);
+  // Led by the share, in the same words as the panel: what a person on this
+  // road can no longer get to. The counts behind it follow.
+  if (isFinite(before)) {
+    const lines: string[] = [];
+    if (before <= 0) lines.push(`No buildings are within a ${minutes} minute drive of here.`);
+    else if (lost > 0) {
+      lines.push(`About ${humanPercent(lost / before)} of the homes, shops, schools and other `
+        + `buildings they could drive to within ${minutes} minutes are now out of reach.`);
+      lines.push(`Before ${w.event} they could reach ${buildings(before)} within ${minutes} minutes. `
+        + `With ${w.closed} closed, they can reach ${humanNumber(before - lost)}, which is `
+        + `${humanNumber(lost)} fewer.`);
+    } else {
+      lines.push(`Everything they could drive to within ${minutes} minutes, ${buildings(before)}, `
+        + `is still in reach.`);
+    }
+    sections.push({ heading: "For someone on this road", lines, lead: lost > 0 });
+  }
+
+  const others: string[] = [];
+  for (const c of ISOLATION_CUTOFFS) {
+    if (c === minutes) continue;
+    const b = Number(p[`bld_${c}m_baseline`]);
+    const l = Number(p[`lost_${c}m`] ?? 0);
+    if (!isFinite(b) || b <= 0) continue;
+    others.push(l > 0
+      ? `Within ${c} minutes you lose ${humanNumber(l)} of ${buildings(b)}, about ${humanPercent(l / b)}.`
+      : `Within ${c} minutes you lose none of ${buildings(b)}.`);
+  }
+  if (others.length) sections.push({ heading: "At the other drive times", lines: others });
+
+  const dist = p.dist_to_hazard_m != null ? Number(p.dist_to_hazard_m) : null;
+  if (dist != null && isFinite(dist)) {
+    sections.push({
+      heading: "Where it is",
+      lines: [dist <= 30 ? `Right beside ${w.area}.` : `About ${milesInWords(dist)} from ${w.area}.`],
+    });
+  }
+
+  const footnote = "A building means any building: a home, a business, a school or any other "
+    + "kind, each counted once whatever its size. Drive times assume no traffic.";
+  return renderPopup(primary, type, rank, sections, footnote, 470);
+}
+
+// A service's popup: its name and what kind of place it is.
+function describeService(p: Record<string, any>): string {
+  const kind = SERVICE_KINDS.find((k) => k.id === p.kind);
+  return renderPopup(String(p.name || kind?.one || "Service"), kind?.one ?? "", "", [{
+    heading: "Where trips go",
+    lines: [`One of the ${(kind?.label ?? "services").toLowerCase()} the detour trips are counted to.`],
+  }], "", 360);
+}
+
+// The hazard's own popup, on hovering or clicking its hatched area: what it
+// is, what it cuts off, and what is in it. White on charcoal (the
+// hazard-pop class in index.html), so it never reads as a road's popup.
+function describeHazard(h: Hazard): string {
+  const w = HAZARD_WORDS[h.kind];
+  const kind = h.kind.charAt(0).toUpperCase() + h.kind.slice(1);
+  const n = (v: number, one: string, many: string) => `${humanNumber(v)} ${v === 1 ? one : many}`;
+  const lines = [
+    h.about[0],
+    `Every road ${w.inside} is closed and drawn in red.`,
+    h.isolatedRoads > 0
+      ? `It cuts off ${n(h.isolatedRoads, "road", "roads")} completely, with `
+        + `${n(h.isolatedBuildings, "building", "buildings")} on ${h.isolatedRoads === 1 ? "it" : "them"}.`
+      : "It cuts off no road completely.",
+    ...(h.hazardBuildings > 0
+      ? [`${n(h.hazardBuildings, "building is", "buildings are")} ${w.inside} or on its closed roads.`]
+      : []),
+    ...h.about.slice(1),
+  ];
+  return `<div style="font-family:Figtree,Helvetica,Arial,sans-serif;max-width:380px;color:#fff">`
+    + `<div style="font-size:10.5px;letter-spacing:0.06em;text-transform:uppercase;color:#c9ced4;font-weight:700">${escapeHtml(kind)}</div>`
+    + `<div style="font-weight:700;font-size:13.5px;line-height:1.3;margin-top:1px">${escapeHtml(h.label)}</div>`
+    + lines.map((l) => `<div style="font-size:11.5px;line-height:1.5;margin-top:5px">${escapeHtml(l)}</div>`).join("")
+    + `</div>`;
+}
+
+function renderPopup(primary: string, type: string, rank: string, sections: Section[],
+                     footnote: string, maxWidth: number): string {
+  const body = sections.map(({ heading, rows, lines, lead }) => {
     const head = `<div style="font-size:10.5px;color:#7a8490;text-transform:uppercase;`
       + `letter-spacing:0.05em;margin:8px 0 3px">${escapeHtml(heading)}</div>`;
     if (lines) {
-      return head + lines.map((l) =>
-        `<div style="font-size:11.5px;line-height:1.5">${escapeHtml(l)}</div>`).join("");
+      return head + lines.map((l, i) =>
+        `<div style="font-size:${lead && i === 0 ? "12.5px;font-weight:700" : "11.5px"};line-height:1.5`
+        + `${lead && i === 0 ? ";margin-bottom:3px" : ""}">${escapeHtml(l)}</div>`).join("");
     }
     return head + `<table style="border-collapse:collapse;font-size:11.5px">`
       + (rows ?? []).map(([k, v]) =>
@@ -802,10 +1337,10 @@ function describe(p: Record<string, any>, classField: string, score: Score,
   }).join("");
 
   return `
-    <div style="font-family:Figtree,Helvetica,Arial,sans-serif;max-width:${isPinch ? 470 : 510}px">
+    <div style="font-family:Figtree,Helvetica,Arial,sans-serif;max-width:${maxWidth}px">
       <div style="font-weight:700;font-size:13.5px;line-height:1.3">${escapeHtml(primary)}</div>
       <div style="color:#667;font-size:11.5px">${escapeHtml(type)}</div>
-      <div style="font-size:12px;margin-top:7px">${rank}</div>
+      ${rank ? `<div style="font-size:12px;margin-top:7px">${rank}</div>` : ""}
       ${body}
       ${footnote ? `<div style="font-size:10.5px;color:#7a8490;line-height:1.45;`
         + `margin-top:8px;border-top:1px solid #e3e7ea;padding-top:5px">`

@@ -34,6 +34,22 @@
       .guide-popup.maplibregl-popup-anchor-top-right .maplibregl-popup-tip { border-bottom-color: #003865; }
       .guide-popup.maplibregl-popup-anchor-left .maplibregl-popup-tip { border-right-color: #003865; }
       .guide-popup.maplibregl-popup-anchor-right .maplibregl-popup-tip { border-left-color: #003865; }
+      /* The hazard's popup, in charcoal (HAZARD_INK in src/MapView.tsx), so it
+         never reads as a road's white popup. */
+      .hazard-pop .maplibregl-popup-content {
+        background: #23272e; color: #fff; border-radius: 10px;
+        box-shadow: 0 8px 24px rgba(16, 24, 40, 0.3);
+      }
+      .hazard-pop .maplibregl-popup-close-button { color: #fff; }
+      .hazard-pop .maplibregl-popup-close-button:hover { background: rgba(255,255,255,0.15); color: #fff; }
+      .hazard-pop.maplibregl-popup-anchor-bottom .maplibregl-popup-tip,
+      .hazard-pop.maplibregl-popup-anchor-bottom-left .maplibregl-popup-tip,
+      .hazard-pop.maplibregl-popup-anchor-bottom-right .maplibregl-popup-tip { border-top-color: #23272e; }
+      .hazard-pop.maplibregl-popup-anchor-top .maplibregl-popup-tip,
+      .hazard-pop.maplibregl-popup-anchor-top-left .maplibregl-popup-tip,
+      .hazard-pop.maplibregl-popup-anchor-top-right .maplibregl-popup-tip { border-bottom-color: #23272e; }
+      .hazard-pop.maplibregl-popup-anchor-left .maplibregl-popup-tip { border-right-color: #23272e; }
+      .hazard-pop.maplibregl-popup-anchor-right .maplibregl-popup-tip { border-left-color: #23272e; }
     </style>
   </head>
   <body>
