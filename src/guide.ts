@@ -57,7 +57,7 @@ export const EXAMPLES: Example[] = [
     hazard: "mallard_doby_creek1", road: "US Hwy 29 Service (Frontage) Road",
     lngLat: [-80.72769, 35.32799], zoom: 14 },
   { id: "isolation-mcmullen_creek1", tab: "isolation", county: "mecklenburg", countyLabel: "Mecklenburg",
-    hazard: "mcmullen_creek1", road: "Robinhood Road", lngLat: [-80.78422, 35.17036], zoom: 14 },
+    hazard: "mcmullen_creek1", road: "Robinhood Road", lngLat: [-80.78324, 35.17022], zoom: 14 },
   { id: "isolation-burntmillcreek1", tab: "isolation", county: "new_hanover", countyLabel: "New Hanover",
     hazard: "burntmillcreek1", road: "One Tree Hill Way", lngLat: [-77.92781, 34.25536], zoom: 14 },
   { id: "isolation-northchase1", tab: "isolation", county: "new_hanover", countyLabel: "New Hanover",
