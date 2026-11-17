@@ -13,7 +13,8 @@
     "hazards": "python3 scripts/make_hazards.py",
     "services": "python3 scripts/make_services.py",
     "tiles": "bash scripts/build_tiles.sh",
-    "tiles:publish": "bash scripts/publish_tiles.sh"
+    "tiles:publish": "bash scripts/publish_tiles.sh",
+    "prepare": "git config core.hooksPath .githooks || true"
   },
   "dependencies": {
     "@emotion/react": "^11.11.4",

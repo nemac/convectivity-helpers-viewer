@@ -260,13 +260,14 @@ export const MIN_RANKED = 10;
 
 // Where to look when a hazard is picked: on the hazard, close enough to see
 // the roads around it. The hazards run from a few hundred metres to a few
-// miles across, so the zoom is set by the hazard's size, about a quarter of
-// the map's width, and kept between the county view and street level.
+// miles across, so the zoom is set by the hazard's size, about a third of
+// the map's width, and kept between the county view and street level. The
+// cap was 13 at first; the user asked for small hazards to open closer.
 export function hazardView(h: Hazard): { center: [number, number]; zoom: number } {
   const [w, s, e, n] = h.hazardBounds;
   const span = Math.max(e - w, (n - s) * 1.25, 1e-4);
-  const zoom = Math.log2((900 * 360) / (256 * span * 4));
-  return { center: [(w + e) / 2, (s + n) / 2], zoom: Math.max(11, Math.min(13, zoom)) };
+  const zoom = Math.log2((900 * 360) / (256 * span * 3));
+  return { center: [(w + e) / 2, (s + n) / 2], zoom: Math.max(11, Math.min(14, zoom)) };
 }
 
 // The buildings a hazard run writes out: cut off (on roads with no way out)

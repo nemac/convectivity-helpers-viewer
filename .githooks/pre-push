@@ -1,0 +1,38 @@
+#!/bin/bash
+# Publish the tiles before a push to master.
+#
+# A push to master deploys the app (.github/workflows/deploy.yml), but the
+# deploy cannot carry the tiles: they are gitignored and too large for
+# GitHub. So before the push leaves this machine, this uploads whatever in
+# public/data has changed (scripts/publish_tiles.sh does the work and skips
+# anything already in the bucket). The tiles are then live before the app
+# that reads them.
+#
+# If the upload fails, the push stops, so an app is never deployed ahead of
+# its tiles. To push anyway: git push --no-verify
+#
+# Turned on by `npm install` (the "prepare" script sets core.hooksPath to
+# .githooks).
+
+set -euo pipefail
+
+pushes_master=false
+while read -r _local_ref _local_sha remote_ref _remote_sha; do
+    [ "$remote_ref" = "refs/heads/master" ] && pushes_master=true
+done
+$pushes_master || exit 0
+
+REPO="$(git rev-parse --show-toplevel)"
+if ! ls "$REPO"/public/data/*.pmtiles >/dev/null 2>&1; then
+    echo "pre-push: no tiles in public/data on this machine, so none to publish."
+    exit 0
+fi
+
+echo "pre-push: publishing changed tiles before the deploy..."
+if ! bash "$REPO/scripts/publish_tiles.sh"; then
+    echo ""
+    echo "pre-push: publishing the tiles failed, so the push was stopped."
+    echo "Fix the AWS sign-in (default profile) and push again, or push"
+    echo "without publishing: git push --no-verify"
+    exit 1
+fi

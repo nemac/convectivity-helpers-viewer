@@ -1,15 +1,20 @@
 #!/bin/bash
 # ===============================================================
-# publish_tiles.sh: upload public/data/*.pmtiles to the site bucket
+# publish_tiles.sh: upload public/data to the site bucket
 # ===============================================================
 # The tiles are gitignored and one of them is larger than GitHub
-# accepts, so the deploy workflow cannot carry them. This uploads
-# them from this machine into data/ in the same bucket the viewer
-# is served from, then tells CloudFront to drop its cached copies.
+# accepts, so the deploy workflow cannot carry them, and it leaves
+# data/ in the bucket alone. This uploads, from this machine, into
+# data/ in the same bucket the viewer is served from:
+#   - every public/data/*.pmtiles (the road tiles), and
+#   - public/data/services.geojson (the Detours service points),
+# then tells CloudFront to drop its cached copies, if anything changed.
 #
-# Run it after `npm run tiles`, whenever the tiles change.
+# It runs by itself before every push to master, through the pre-push
+# hook in .githooks/ (turned on by `npm install`), so the tiles are on
+# the site before the app that reads them. It can also be run by hand:
 #
-# Usage:  bash scripts/publish_tiles.sh
+#   bash scripts/publish_tiles.sh        (or: npm run tiles:publish)
 #
 # Uses whatever AWS credentials the aws CLI picks up (the default
 # profile, or AWS_PROFILE). The bucket and distribution are read
@@ -41,13 +46,27 @@ if [ -z "$BUCKET" ] || [ -z "$DISTRIBUTION" ]; then
     exit 1
 fi
 
-echo "Uploading tiles to s3://$BUCKET/data/"
+echo "Uploading changed tiles to s3://$BUCKET/data/"
 
-# No --delete: a tile file that is absent locally stays in the bucket.
-aws s3 sync "$SRC" "s3://$BUCKET/data" \
+# No --delete: a file that is absent locally stays in the bucket. sync only
+# sends files whose size or date differ from the bucket's copy, and prints a
+# line for each one it sends, which is how a change is noticed below.
+changed="$(aws s3 sync "$SRC" "s3://$BUCKET/data" \
     --exclude "*" --include "*.pmtiles" \
     --content-type "application/octet-stream" \
-    --cache-control "no-cache"
+    --cache-control "no-cache")"
+if [ -f "$SRC/services.geojson" ]; then
+    changed="$changed$(aws s3 sync "$SRC" "s3://$BUCKET/data" \
+        --exclude "*" --include "services.geojson" \
+        --content-type "application/geo+json" \
+        --cache-control "no-cache")"
+fi
+
+if [ -z "$changed" ]; then
+    echo "Nothing changed; the bucket already has these files."
+    exit 0
+fi
+echo "$changed"
 
 # A PMTiles file is read in byte ranges. If CloudFront kept ranges of the old
 # file and served them beside ranges of the new one, the map would draw
