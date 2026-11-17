@@ -374,8 +374,15 @@ interface Props {
   // Which of the hazard's buildings to draw.
   hazardBuildings?: HazardBuildingStatus[];
   // The guide is on its step about the hazard: light the hazard up as a hover
-  // does, and move the guide beside its road so it does not cover the hazard.
+  // does.
   guideOnHazard?: boolean;
+  // Which guide step is showing, so the guide can be moved off the hazard
+  // again whenever the step (and so its height) changes. -1 for none.
+  guideStep?: number;
+  // During the guide's steps about the panel, its card on the map's left
+  // edge, as [left, top, right, bottom] in map pixels. The map slides the
+  // hazard out from under it.
+  guideCard?: [number, number, number, number] | null;
 }
 
 // One road to travel to and open the guide popup on. `key` changes when the
@@ -398,7 +405,8 @@ export default function MapView({
   tilesUrl, sourceLayer, classField, score, basemap, opacity, minClass, center, zoom, flyKey,
   countyKey, onEmptyChange, fullBounds, fullLabel, focus, onFocusFeature, onInteract,
   guide, onGuideAway, onGuideClosed, hazard = null, buildingsUrl = null, services = null,
-  hazardBuildings = ["cut_off", "in_hazard"], guideOnHazard = false,
+  hazardBuildings = ["cut_off", "in_hazard"], guideOnHazard = false, guideStep = -1,
+  guideCard = null,
 }: Props) {
   const div = useRef<HTMLDivElement>(null);
   const map = useRef<Map | null>(null);
@@ -438,6 +446,7 @@ export default function MapView({
   // the guide into. MapLibre owns the popup; React only fills it.
   const guidePopup = useRef<maplibregl.Popup | null>(null);
   const guideFit = useRef<(() => void) | null>(null);
+  const guideRoad = useRef<maplibregl.LngLat | null>(null);   // the road the guide is about
   const [guideHost, setGuideHost] = useState<HTMLElement | null>(null);
 
   // Mark one road with the glow and leave a closable popup on it. Shared by a
@@ -450,8 +459,8 @@ export default function MapView({
   // `hit` may be null then, when the road could not be found, and the guide
   // still opens at the spot without the glow.
   //
-  // The guide is anchored above the road (beside it only on the hazard step,
-  // set by the effect near the end). Left to choose, MapLibre
+  // The guide is anchored above the road, unless that covers the hazard on the
+  // functional isolation tab (see the effect near the end). Left to choose, MapLibre
   // flips a popup below its point when it is taller than the room above, even
   // with less room below, and the guide's Back and Next row then jumps and is
   // cut off by the map's edge. Fixed to "bottom", its lower edge, where those
@@ -483,11 +492,12 @@ export default function MapView({
     // Beside the road it is centred on it, so the whole map's height is the room.
     const fit = () => {
       if (!host) return;
-      const room = p.options.anchor === "bottom"
-        ? m.project(p.getLngLat()).y - 60 : m.getContainer().clientHeight - 40;
+      const y = m.project(p.getLngLat()).y, h = m.getContainer().clientHeight;
+      const a = p.options.anchor;
+      const room = a === "bottom" ? y - 60 : a === "top" ? h - y - 60 : h - 40;
       host.style.setProperty("--guide-room", `${Math.max(180, room)}px`);
     };
-    if (host) guideFit.current = fit;
+    if (host) { guideFit.current = fit; guideRoad.current = p.getLngLat(); }
     if (host) {
       p.setDOMContent(host);
       fit();
@@ -813,6 +823,7 @@ export default function MapView({
     });
 
     map.current = m;
+    if (import.meta.env.DEV) (window as any).__map = m;   // for checks in a browser
     return () => { m.remove(); map.current = null; ready.current = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -1045,36 +1056,74 @@ export default function MapView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focus?.key]);
 
-  // The guide's step about the hazard (functional isolation only). The hazard
-  // and what it cuts off light up yellow, as they do under the mouse, and the
-  // guide moves beside its road, on the side away from the hazard, so the
-  // hazard it is talking about stays in view. When that side is too narrow for
-  // the guide, the map slides over to make room. Other steps put it back above
-  // the road.
+  // The guide never covers the hazard on the functional isolation tab. On
+  // the road steps the map puts the hazard (with the example road) at its
+  // left side, centred from top to bottom, and the guide sits right beside
+  // the hazard's right-hand edge, as the user asked. When the two do not fit
+  // across the map, it zooms out until they do. The other tabs keep the guide
+  // above its road.
+  //
+  // On the hazard step the hazard and what it cuts off also light up yellow,
+  // as they do under the mouse.
   useEffect(() => {
     const m = map.current;
     if (!m) return;
-    const on = guideOnHazard && hazard != null;
-    guideHazard.current = on;
-    if (!hazardPinned.current) setHazardHighlight(m, on);
+    const lit = guideOnHazard && hazard != null;
+    guideHazard.current = lit;
+    if (!hazardPinned.current) setHazardHighlight(m, lit);
     const p = guidePopup.current;
-    if (!p) return;
-    let anchor: maplibregl.PositionAnchor = "bottom";
-    if (on) {
-      const at = m.project(p.getLngLat());
-      const [w, s, e, n] = hazard!.hazardBounds;
-      const hz = m.project([(w + e) / 2, (s + n) / 2]);
-      anchor = hz.x >= at.x ? "right" : "left";
-      const NEED = 440;   // the guide's 400 px, its offset and tip, and a margin
-      const room = anchor === "right" ? at.x : m.getContainer().clientWidth - at.x;
-      if (room < NEED) m.panBy([anchor === "right" ? room - NEED : NEED - room, 0], { duration: 400 });
-    }
-    if (p.options.anchor !== anchor) {
-      p.options.anchor = anchor;
-      p.setLngLat(p.getLngLat());   // redraws it at the new anchor
-    }
-    guideFit.current?.();
-  }, [guideOnHazard, guideHost, hazard]);
+    if (!p || !hazard) return;
+    const road = guideRoad.current ?? p.getLngLat();
+    const place = () => {
+      if (guidePopup.current !== p) return;
+      // the hazard and the road together
+      const [hw, hs, he, hn] = hazard.hazardBounds;
+      const w = Math.min(hw, road.lng), s = Math.min(hs, road.lat);
+      const e = Math.max(he, road.lng), n = Math.max(hn, road.lat);
+      const mid = (s + n) / 2;
+      // the guide beside the right-hand edge, half way down
+      p.options.anchor = "left";
+      p.options.offset = 20;
+      p.setLngLat([e, mid]);
+      guideFit.current?.();
+      const box = p.getElement()?.querySelector<HTMLElement>(".maplibregl-popup-content");
+      const W = box?.offsetWidth ?? 400;
+      const width = m.getContainer().clientWidth;
+      const LEFT = 40;
+      // zoom out, never in, until the hazard and the guide fit side by side
+      const west = m.project([w, mid]), east = m.project([e, mid]);
+      const room = width - LEFT - 20 - W - 30;
+      const k = Math.min(1, room / Math.max(1, east.x - west.x));
+      // the hazard's left edge goes LEFT px from the map's, half way down
+      const centre = m.unproject([west.x - (LEFT - width / 2) / k, west.y]);
+      m.easeTo({ center: centre, zoom: m.getZoom() + Math.log2(k), duration: 500 });
+    };
+    if (m.isMoving() || !m.loaded()) m.once("idle", place);
+    else requestAnimationFrame(place);
+    return () => { m.off("idle", place); };
+  }, [guideOnHazard, guideStep, guideHost, hazard]);
+
+  // On the steps about the panel, the guide is a card on the map's left edge.
+  // When it covers the hazard, the map fits the whole hazard into the part of
+  // the map to the card's right: sliding it over, and zooming out when the
+  // hazard is too wide for that part, but never zooming in.
+  const cardKey = guideCard ? guideCard.map(Math.round).join(",") : "";
+  useEffect(() => {
+    const m = map.current;
+    if (!m || !guideCard || !hazard) return;
+    const card = guideCard;
+    const slide = () => {
+      if (hazardUnder(m, card) <= 0.01) return;
+      const [w, s, e, n] = hazard.hazardBounds;
+      m.fitBounds([[w, s], [e, n]], {
+        padding: { left: card[2] + 24, right: 24, top: 70, bottom: 40 },
+        maxZoom: m.getZoom(), duration: 600,
+      });
+    };
+    if (m.isMoving() || !m.loaded()) m.once("idle", slide);
+    else requestAnimationFrame(slide);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cardKey, hazard]);
 
   // The page took the guide away (its close button, Done, or a change in the
   // panel), so take its popup off the map.
@@ -1395,6 +1444,35 @@ function setHazardHighlight(m: Map, on: boolean) {
   for (const id of HAZARD_HL_LAYERS) {
     if (m.getLayer(id)) m.setLayoutProperty(id, "visibility", on ? "visible" : "none");
   }
+}
+
+// A rectangle on the map, in map pixels: [left, top, right, bottom].
+type Rect = [number, number, number, number];
+
+// The hazard's layers the guide must not cover: the hatched area and the
+// buildings drawn on it.
+const HAZARD_SHAPE_LAYERS = ["hazard-fill", "hazard-line", "hazard-bldg-cut_off", "hazard-bldg-in_hazard"];
+
+// How much of a rectangle the hazard covers, from 0 to 1, sampled on a 9 by 9
+// grid. Off the map nothing is drawn to test, so a point there counts as
+// covered when it falls inside the hazard's bounding box, which is where the
+// hazard would be once the map slides over to show it.
+function hazardUnder(m: Map, [x0, y0, x1, y1]: Rect, bounds?: Bounds): number {
+  const layers = HAZARD_SHAPE_LAYERS.filter((id) => m.getLayer(id));
+  if (!layers.length) return 0;
+  const w = m.getContainer().clientWidth, h = m.getContainer().clientHeight;
+  let hit = 0;
+  for (let i = 0; i < 9; i++) {
+    for (let j = 0; j < 9; j++) {
+      const x = x0 + ((x1 - x0) * (i + 0.5)) / 9, y = y0 + ((y1 - y0) * (j + 0.5)) / 9;
+      if (x < 0 || y < 0 || x > w || y > h) {
+        const ll = m.unproject([x, y]);
+        if (bounds && ll.lng >= bounds[0] && ll.lng <= bounds[2] && ll.lat >= bounds[1] && ll.lat <= bounds[3]) hit += 1;
+      }
+      else if (m.queryRenderedFeatures([x, y], { layers }).length) hit += 1;
+    }
+  }
+  return hit / 81;
 }
 
 // Where the hazard's popup goes: beside the hazard, on whichever side has room

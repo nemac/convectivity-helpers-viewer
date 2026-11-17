@@ -311,8 +311,8 @@ export default function App() {
   const panelRef = useRef<HTMLDivElement>(null);
   const mapAreaRef = useRef<HTMLDivElement>(null);
   const coachRef = useRef<HTMLDivElement>(null);
-  const [coach, setCoach] = useState<{ top: number; arrow: number | null; room: number }>(
-    { top: 16, arrow: null, room: 600 });
+  const [coach, setCoach] = useState<{ top: number; arrow: number | null; room: number;
+    w?: number; h?: number }>({ top: 16, arrow: null, room: 600 });
   React.useLayoutEffect(() => {
     if (!onPanelStep) return;
     const panel = panelRef.current;
@@ -324,14 +324,15 @@ export default function App() {
       if (!area) return;
       // 12 px clear of the map's top and bottom, less the card's padding
       const room = Math.max(180, area.height - 24 - 26);
-      if (!target) { setCoach({ top: 16, arrow: null, room }); return; }
+      const w = coachRef.current?.offsetWidth ?? 380;
       const h = coachRef.current?.offsetHeight ?? 300;
+      if (!target) { setCoach({ top: 16, arrow: null, room, w, h }); return; }
       const t = target.getBoundingClientRect();
       // Aim at the card's heading and first control rather than its middle,
       // since some cards (the colour key) are tall.
       const aim = t.top + Math.min(t.height / 2, 32) - area.top;
       const top = Math.max(12, Math.min(aim - 34, area.height - h - 12));
-      setCoach({ top, arrow: Math.max(18, Math.min(aim - top, h - 18)), room });
+      setCoach({ top, arrow: Math.max(18, Math.min(aim - top, h - 18)), room, w, h });
     };
     place();
     panel?.addEventListener("scroll", place, { passive: true });
@@ -773,6 +774,9 @@ export default function App() {
             services={tab === "detour" ? services : null}
             hazardBuildings={hazardBldgs}
             guideOnHazard={onHazard && step?.showsHazard === true}
+            guideStep={guide && !onPanelStep ? guide.step : -1}
+            guideCard={guide && onPanelStep && coach.w && coach.h
+              ? [16, coach.top, 16 + coach.w, coach.top + coach.h] : null}
             focus={focus}
             onFocusFeature={(key, props) => {
               // called once the guide's popup is on the road, found or not
