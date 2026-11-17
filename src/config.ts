@@ -362,9 +362,9 @@ export const METHODOLOGY: Record<TabId, { file: string; label: string }[]> = {
   ],
 };
 
-// Light gray is first because it is the default: the road classes are a
-// red-to-blue ramp, and a near-neutral background is what lets the low blue
-// classes stay legible.
+// The two grays come first: the road ramp holds its lightness between L*40
+// and L*70 so every class reads on either one. Dark gray is the default at
+// the user's request (2026-11-17); light gray was the default before.
 export const BASEMAPS = {
   lightgray: {
     label: "Esri light gray",
@@ -392,7 +392,7 @@ export const BASEMAPS = {
   },
 } as const;
 export type BasemapKey = keyof typeof BASEMAPS;
-export const DEFAULT_BASEMAP: BasemapKey = "lightgray";
+export const DEFAULT_BASEMAP: BasemapKey = "darkgray";
 
 // Overture's buildings, for context on every tab, off until the reader ticks
 // the box. Read straight from Overture's own public PMTiles in the browser,
