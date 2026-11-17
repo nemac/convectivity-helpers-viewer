@@ -155,6 +155,17 @@ function roadLayers(sourceLayer: string, classField: string, minClass: number, o
   const layers: any[] = [];
   if (hazard) {
     layers.push({
+      // Shown only while the hazard is hovered (or its popup is pinned): a
+      // yellow glow under every road it cuts off or closes.
+      id: "hazard-hl-roads", type: "line", source: "roads", "source-layer": sourceLayer,
+      filter: ["==", classOf(classField), CUT_OFF_CLASS],
+      layout: { "line-cap": "round", "line-join": "round", visibility: "none" },
+      paint: {
+        "line-color": HIGHLIGHT, "line-opacity": 0.95, "line-blur": 2,
+        "line-width": ["interpolate", ["linear"], ["zoom"], 10, 14, 14, 32, 17, 56],
+      },
+    });
+    layers.push({
       id: "roads-casing", type: "line", source: "roads", "source-layer": sourceLayer,
       filter: ["==", classOf(classField), CUT_OFF_CLASS],
       layout: { "line-cap": "round", "line-join": "round" },
@@ -205,6 +216,15 @@ function roadLayers(sourceLayer: string, classField: string, minClass: number, o
       // other buildings stay under the roads.
       // Each with a white halo and a dark edge, so a small footprint stands
       // out against the red roads and the hatching it often sits on.
+      // The same yellow glow around every building it cuts off or floods.
+      {
+        id: "hazard-hl-bldg", type: "line", source: "roads", "source-layer": "hazard_buildings",
+        layout: { "line-join": "round", visibility: "none" },
+        paint: {
+          "line-color": HIGHLIGHT, "line-blur": 1.5,
+          "line-width": ["interpolate", ["linear"], ["zoom"], 12, 5, 16, 10],
+        },
+      },
       ...(["in_hazard", "cut_off"] as HazardBuildingStatus[]).flatMap((k) => [
         {
           id: `hazard-bldg-${k}-halo`, type: "line", source: "roads", "source-layer": "hazard_buildings",
@@ -231,7 +251,11 @@ function roadLayers(sourceLayer: string, classField: string, minClass: number, o
 }
 const HAZARD_BLDG_LAYERS = (k: HazardBuildingStatus) =>
   [`hazard-bldg-${k}-halo`, `hazard-bldg-${k}`, `hazard-bldg-${k}-edge`];
-const ROAD_LAYER_IDS = [...HAZARD_BLDG_LAYERS("in_hazard"), ...HAZARD_BLDG_LAYERS("cut_off"),
+// The hover highlight for the hazard's roads and buildings: a yellow none of
+// the road ranks, the cut-off red, the teal or the hatching use.
+const HIGHLIGHT = "#ffe14d";
+const HAZARD_HL_LAYERS = ["hazard-hl-roads", "hazard-hl-bldg"];
+const ROAD_LAYER_IDS = [...HAZARD_HL_LAYERS, ...HAZARD_BLDG_LAYERS("in_hazard"), ...HAZARD_BLDG_LAYERS("cut_off"),
   "roads-casing", "roads-line", "hazard-tint", "hazard-fill", "hazard-rim", "hazard-line", "roads-hit"];
 
 const HAZARD_INK = "#23272e";
@@ -378,6 +402,8 @@ export default function MapView({
   const ready = useRef(false);
   const hover = useRef<maplibregl.Popup | null>(null);    // follows the cursor
   const pinned = useRef<maplibregl.Popup | null>(null);   // left by a click
+  const hazardHover = useRef<maplibregl.Popup | null>(null);  // the hazard's, beside it
+  const hazardPinned = useRef(false);
   // the current props, read by handlers that are registered once
   const latest = useRef({ tilesUrl, sourceLayer, classField, score, basemap, opacity, minClass, countyKey, hazard, hazardBuildings });
   latest.current = { tilesUrl, sourceLayer, classField, score, basemap, opacity, minClass, countyKey, hazard, hazardBuildings };
@@ -429,7 +455,8 @@ export default function MapView({
   // `html`, when given, is shown in place of the road's numbers, with no glow:
   // that is the hazard's own popup.
   const pin = (m: Map, lngLat: maplibregl.LngLatLike, hit: maplibregl.MapGeoJSONFeature | null,
-               asGuide = false, html?: string, className?: string) => {
+               asGuide = false, html?: string, className?: string,
+               anchor?: maplibregl.PositionAnchor) => {
     const glow = m.getSource("hover") as maplibregl.GeoJSONSource | undefined;
     hover.current?.remove();
     pinned.current?.remove();
@@ -440,7 +467,8 @@ export default function MapView({
     const p = new maplibregl.Popup(asGuide
       ? { closeButton: false, closeOnClick: false, maxWidth: "400px", offset: 14,
           className: "guide-popup", anchor: "bottom" }
-      : { closeButton: true, maxWidth: "540px", offset: 12, ...(className ? { className } : {}) })
+      : { closeButton: true, maxWidth: "540px", offset: anchor ? 18 : 12,
+          ...(className ? { className } : {}), ...(anchor ? { anchor } : {}) })
       .setLngLat(lngLat);
     const host = asGuide ? document.createElement("div") : null;
     // offset 14, tip 10, a 10 px margin at the top, and the popup's own
@@ -666,15 +694,38 @@ export default function MapView({
       // A pinned popup from a click wins: the hover one would sit on top of it
       // and fight for the same space.
       const glow = m.getSource("hover") as maplibregl.GeoJSONSource | undefined;
+      const overHazard = !!hz && !hit && !svc;
+      if (!hazardPinned.current) setHazardHighlight(m, overHazard);
       if (pinned.current && (pinned.current !== guidePopup.current || guideInView())) {
         hover.current?.remove();
+        hazardHover.current?.remove();
         return;
       }
       if (!hit && !hz && !svc) {
         hover.current?.remove();
+        hazardHover.current?.remove();
         glow?.setData(EMPTY_FC);
         return;
       }
+      // The hazard's own popup sits beside the hazard, at its right-hand
+      // edge, so it never covers the hazard or the roads it cuts off, which
+      // light up while it shows.
+      if (overHazard) {
+        hover.current?.remove();
+        glow?.setData(EMPTY_FC);
+        const side = hazardSide(m, hz!);
+        // a new popup when the side changes, since a popup's anchor is fixed
+        if (!hazardHover.current || hazardHover.current.options.anchor !== side.anchor) {
+          hazardHover.current?.remove();
+          hazardHover.current = new maplibregl.Popup({
+            closeButton: false, closeOnClick: false, maxWidth: "400px",
+            offset: 18, anchor: side.anchor, className: "hazard-pop",
+          });
+        }
+        hazardHover.current.setLngLat(side.at).setHTML(describeHazard(hz!)).addTo(m);
+        return;
+      }
+      hazardHover.current?.remove();
       interactCb.current?.();
       glow?.setData(hit
         ? { type: "FeatureCollection", features: [{ type: "Feature", geometry: hit.geometry, properties: {} }] }
@@ -700,6 +751,8 @@ export default function MapView({
     // it marks the road the popup is about, and the guide's words point at it.
     m.getCanvas().addEventListener("mouseout", () => {
       hover.current?.remove();
+      hazardHover.current?.remove();
+      if (!hazardPinned.current) setHazardHighlight(m, false);
       if (!pinned.current) {
         (m.getSource("hover") as maplibregl.GeoJSONSource | undefined)?.setData(EMPTY_FC);
       }
@@ -736,7 +789,15 @@ export default function MapView({
       }
       interactCb.current?.();
       if (hit) pin(m, e.lngLat, hit);
-      else pin(m, e.lngLat, null, false, describeHazard(hz!), "hazard-pop");
+      else {
+        hazardHover.current?.remove();
+        const side = hazardSide(m, hz!);
+        pin(m, side.at, null, false, describeHazard(hz!), "hazard-pop", side.anchor);
+        // the highlight stays while the pinned popup is open
+        hazardPinned.current = true;
+        setHazardHighlight(m, true);
+        pinned.current?.on("close", () => { hazardPinned.current = false; setHazardHighlight(m, false); });
+      }
     });
 
     map.current = m;
@@ -862,6 +923,7 @@ export default function MapView({
       // must not still answer the cursor.
       if (m.getLayer("roads-hit")) m.setFilter("roads-hit", filter);
     }
+    if (m.getLayer("hazard-hl-roads")) m.setFilter("hazard-hl-roads", ["==", classOf(classField), CUT_OFF_CLASS]);
     if (m.getLayer("roads-casing")) {
       m.setFilter("roads-casing", ["==", classOf(classField), CUT_OFF_CLASS]);
       m.setPaintProperty("roads-casing", "line-width", casingWidth(classes));
@@ -1284,6 +1346,36 @@ function describeIsolation(p: Record<string, any>, classField: string, score: Sc
   return renderPopup(primary, type, rank, sections, footnote, 470);
 }
 
+// Turn the hazard's highlight (its cut-off and closed roads and buildings, in
+// yellow) on or off.
+function setHazardHighlight(m: Map, on: boolean) {
+  for (const id of HAZARD_HL_LAYERS) {
+    if (m.getLayer(id)) m.setLayoutProperty(id, "visibility", on ? "visible" : "none");
+  }
+}
+
+// Where the hazard's popup goes: beside the hazard, on whichever side has room
+// for it (right, left, below, above, in that order). When none has, MapLibre
+// picks the anchor that keeps the popup on the map.
+type PopAnchor = "left" | "right" | "top" | "bottom" | undefined;
+function hazardSide(m: Map, h: Hazard): { at: [number, number]; anchor: PopAnchor } {
+  const [w, s, e, n] = h.hazardBounds;
+  const midLat = (s + n) / 2, midLon = (w + e) / 2;
+  const width = m.getContainer().clientWidth, height = m.getContainer().clientHeight;
+  const NEED_W = 320, NEED_H = 190;
+  const sides: { at: [number, number]; anchor: PopAnchor; room: (x: number, y: number) => boolean }[] = [
+    { at: [e, midLat], anchor: "left", room: (x) => width - x > NEED_W },
+    { at: [w, midLat], anchor: "right", room: (x) => x > NEED_W },
+    { at: [midLon, s], anchor: "top", room: (_, y) => height - y > NEED_H },
+    { at: [midLon, n], anchor: "bottom", room: (_, y) => y > NEED_H + 60 },
+  ];
+  for (const side of sides) {
+    const p = m.project(side.at);
+    if (side.room(p.x, p.y)) return { at: side.at, anchor: side.anchor };
+  }
+  return { at: [e, midLat], anchor: undefined };
+}
+
 // A service's popup: its name and what kind of place it is.
 function describeService(p: Record<string, any>): string {
   const kind = SERVICE_KINDS.find((k) => k.id === p.kind);
@@ -1302,7 +1394,7 @@ function describeHazard(h: Hazard): string {
   const n = (v: number, one: string, many: string) => `${humanNumber(v)} ${v === 1 ? one : many}`;
   const lines = [
     h.about[0],
-    `Every road ${w.inside} is closed and drawn in red.`,
+    `Every road ${w.inside} is closed and drawn in dark red.`,
     h.isolatedRoads > 0
       ? `It cuts off ${n(h.isolatedRoads, "road", "roads")} completely, with `
         + `${n(h.isolatedBuildings, "building", "buildings")} on ${h.isolatedRoads === 1 ? "it" : "them"}.`

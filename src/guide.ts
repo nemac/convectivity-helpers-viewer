@@ -10,7 +10,7 @@
 // help and the classification lines in config.ts), so the guide and the
 // panel always say the same thing in the same words.
 import {
-  CUT_OFF_CLASS, DETOUR_SCORES, HAZARDS, HAZARD_WORDS, Hazard, METHODS, PINCH_MAX_DETOUR_M,
+  CUT_OFF_CLASS, DETOUR_SCORES, ISOLATION_CUTOFFS, HAZARDS, HAZARD_WORDS, Hazard, METHODS, PINCH_MAX_DETOUR_M,
   PINCH_NO_ALTERNATIVE_M, STYLES, TabId, hazardsIn, humanMiles, humanNumber, humanPercent, milesInWords,
   sharePct,
   rankSentence, splitNames,
@@ -210,12 +210,15 @@ function panelSteps(tab: TabId, hazard?: Hazard): GuideStep[] {
     "The colour key shows which colour goes with each rank, with 10 at the top.",
     "Slide the handle beside it up to hide the lower ranks. Only the most important "
       + "roads stay on the map.",
-    "Tick \"Buildings\" under the colour key to show every building from Overture's map, for a "
-      + "sense of who lives and works along a road.",
     ...(tab === "isolation"
       ? ["Dark red, for roads cut off completely or closed, sits at the top of the key above 10. "
-          + "It is not a rank, so it always stays on the map."]
-      : []),
+          + "It is not a rank, so it always stays on the map.",
+         "Under the key, \"Buildings, from Overture Maps\" has a checkbox for each kind. \"Cut off\" "
+          + `and "${upperFirst(HAZARD_WORDS[hazard?.kind ?? "flood"].inside)}" show the buildings this `
+          + "hazard cuts off and the ones inside it, and start on. \"All buildings\" shows every "
+          + "building on Overture's map, for a sense of who lives and works along a road, and starts off."]
+      : ["Tick \"All buildings\" under the colour key to show every building from Overture's map, "
+          + "for a sense of who lives and works along a road."]),
   ] });
   steps.push({ place: "panel", target: "methodology", title: "Want the details?", lines: [
     "The link under \"Methodology\" opens a write-up of how these numbers were worked out. "
@@ -223,11 +226,13 @@ function panelSteps(tab: TabId, hazard?: Hazard): GuideStep[] {
   ] });
   steps.push({ place: "panel", title: "Now try it yourself", lines: [
     "Move your mouse over any road to see its numbers. Click a road to keep them on the screen.",
-    "The \"Basemap\" button with the globe, at the top left of the map, picks a different "
-      + "background. Esri imagery, for example, shows aerial photos.",
+    "The map starts on a dark gray background. The \"Basemap\" button with the globe, at the "
+      + "top left of the map, picks another one. Esri imagery, for example, shows aerial photos.",
     ...(tab === "isolation"
       ? [
-          "Move your mouse over the hatched area to see what the hazard is and what it cuts off.",
+          "Move your mouse over the hatched area to see what the hazard is and what it cuts off. "
+            + "While the mouse is there, every road and building it cuts off or closes lights up "
+            + "in yellow. Click the hatched area to keep it lit.",
           `The button with four arrows on the map zooms out to everything within ${hazard?.bufferMiles ?? 30} `
             + "miles of the hazard, which is the area this run covers. The shaded part of the map "
             + "beyond it was not part of the run.",
@@ -236,7 +241,10 @@ function panelSteps(tab: TabId, hazard?: Hazard): GuideStep[] {
         ? ["The button with four arrows on the map zooms out to show the whole county."]
         : ["Zoom out to see how the pinch points line up across the state. The button with "
             + "four arrows on the map shows the whole state."]),
-    "To see this guide again later, click \"Start the guide\" at the bottom of the map.",
+    "The tabs at the top of the page switch between Functional isolation, Pinch points and "
+      + "Access to services.",
+    "To see this guide again later, click \"Start the guide\" at the bottom of the map. After a "
+      + "few seconds it shrinks to the question mark at the bottom left.",
   ] });
   return steps;
 }
@@ -255,7 +263,7 @@ function isolationSteps(hazard: Hazard | undefined, props: Record<string, any> |
   const hazardLines = [
     `The hatched shape on the map is ${w.area}.`,
     ...(hazard ? [hazard.about[0]] : []),
-    "Every road inside it is treated as closed, bridges included, and drawn in red.",
+    "Every road inside it is treated as closed, bridges included, and drawn in dark red.",
   ];
   const dist = props?.dist_to_hazard_m != null ? Number(props.dist_to_hazard_m) : null;
   if (dist != null) {
@@ -269,12 +277,18 @@ function isolationSteps(hazard: Hazard | undefined, props: Record<string, any> |
         + `${hazard.isolatedRoads === 1 ? "on it" : "on them"}. No road leads out from there at all.`
       : `${upperFirst(w.event)} does not cut any road off completely. Every road outside it still `
         + "has some way out.");
+    if (hazard.hazardBuildings > 0 || hazard.isolatedBuildings > 0) {
+      hazardLines.push("The buildings drawn solid dark red are the ones cut off. The teal ones are "
+        + `${w.inside} or on its closed roads.`);
+    }
     hazardLines.push(...hazard.about.slice(1));
   }
 
   const colourLines = [
     cls === CUT_OFF_CLASS
-      ? `This road is drawn ${drawnAs(cls)}, because it is cut off completely.`
+      ? `This road is drawn ${drawnAs(cls)}, because it is `
+        + (props && (props.is_blocked === true || props.is_blocked === 1)
+          ? `${w.inside} and closed.` : "cut off completely.")
       : isFinite(cls) && cls >= 1 && cls <= 10
         ? `This road is drawn ${drawnAs(cls)}. It ranks ${cls} out of 10`
           + (isFinite(loss) ? `: from here, ${sharePct(loss)} of the places within a ${minutes} `
@@ -296,7 +310,7 @@ function isolationSteps(hazard: Hazard | undefined, props: Record<string, any> |
   if (props && (props.is_isolated === true || props.is_isolated === 1)) {
     numbers.push(`Cut off completely. With ${w.closed} closed, there is no road out from here.`);
   }
-  for (const c of [minutes, ...[5, 10, 15].filter((c) => c !== minutes)]) {
+  for (const c of [minutes, ...ISOLATION_CUTOFFS.filter((c) => c !== minutes)]) {
     const before = Number(props?.[`bld_${c}m_baseline`]);
     const lost = Number(props?.[`lost_${c}m`]);
     if (!isFinite(before) || !isFinite(lost) || before <= 0) continue;
@@ -383,7 +397,7 @@ export function guideSteps(ex: Example, props: Record<string, any> | null,
 
     return [
       { place: "road", title: "What this map can help with", lines: [
-        "This map shows what happens when one road closes, and how much harder it becomes "
+        "Access to services shows what happens when one road closes, and how much harder it becomes "
           + "to reach a fire station, a medical facility, a school, or a grocery or "
           + "convenience store.",
         "It can help you find the roads people depend on most, and see where one closure, "

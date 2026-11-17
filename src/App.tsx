@@ -705,7 +705,7 @@ export default function App() {
                   }} />
                   <Typography variant="caption" sx={{ lineHeight: 1.45 }}>
                     <b>{hazardWords.area.charAt(0).toUpperCase() + hazardWords.area.slice(1)}.</b>{" "}
-                    Every road inside it is closed and drawn in red, like the roads it cuts off
+                    Every road inside it is closed and drawn in dark red, like the roads it cuts off
                     completely. The shaded part of the map lies beyond the{" "}
                     {hazard?.bufferMiles ?? 20} miles around it that this run covers.
                   </Typography>
