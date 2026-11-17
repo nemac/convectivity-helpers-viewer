@@ -707,7 +707,30 @@ export default function MapView({
       return !!g && g === pinned.current && m.getBounds().contains(g.getLngLat());
     };
 
+    // A road's (or a service's) popup waits until the mouse has rested on it
+    // for half a second, so sweeping across the map does not flash popups.
+    // Once one is showing, moving onto the next road updates it at once.
+    // Nothing pops up while the map is being dragged or zoomed.
+    let hoverTimer: ReturnType<typeof setTimeout> | undefined;
+    const HOVER_DELAY_MS = 500;
+    const stopHover = () => { clearTimeout(hoverTimer); hover.current?.remove(); };
+    // the mouse button is down: a drag may be starting, or paused mid-way
+    let pressed = false;
+    // Listened for on the window, before anything else, since MapLibre's own
+    // handlers can stop the event before it reaches the canvas.
+    window.addEventListener("mousedown", (ev) => {
+      if (m.getCanvasContainer().contains(ev.target as Node)) { pressed = true; stopHover(); }
+    }, true);
+    window.addEventListener("mouseup", () => { pressed = false; }, true);
+    m.on("movestart", () => {
+      stopHover();
+      // the glow stays only when it marks a pinned popup's road
+      if (!pinned.current) (m.getSource("hover") as maplibregl.GeoJSONSource | undefined)?.setData(EMPTY_FC);
+    });
+
     m.on("mousemove", (e: MapMouseEvent) => {
+      clearTimeout(hoverTimer);
+      if (pressed || m.isMoving()) { stopHover(); return; }
       const svc = pickService(e);
       const marker = svc ? null : pickMarker(e);
       const hit = svc || marker ? null : pick(e);
@@ -754,25 +777,30 @@ export default function MapView({
         : EMPTY_FC);
       const html = svc ? describeService(svc.properties ?? {})
         : hit ? roadHtml(hit.properties ?? {}) : describeHazard(hz!);
-      if (!hover.current) {
-        hover.current = new maplibregl.Popup({
-          closeButton: false, closeOnClick: false, maxWidth: "540px",
-          offset: 12, className: "road-hover",
-        });
-      }
-      hover.current.setLngLat(e.lngLat).setHTML(html).addTo(m);
-      // The hazard's popup is charcoal, so it never reads as a road's. Set
-      // after addTo: before its first addTo a popup has no element to take
-      // the class, and the hazard's white text then sat on white.
-      if (!hit && !svc) hover.current.addClassName("hazard-pop");
-      else hover.current.removeClassName("hazard-pop");
+      const show = () => {
+        if (pressed || m.isMoving()) return;
+        if (!hover.current) {
+          hover.current = new maplibregl.Popup({
+            closeButton: false, closeOnClick: false, maxWidth: "540px",
+            offset: 12, className: "road-hover",
+          });
+        }
+        hover.current.setLngLat(e.lngLat).setHTML(html).addTo(m);
+        // The hazard's popup is charcoal, so it never reads as a road's. Set
+        // after addTo: before its first addTo a popup has no element to take
+        // the class, and the hazard's white text then sat on white.
+        if (!hit && !svc) hover.current.addClassName("hazard-pop");
+        else hover.current.removeClassName("hazard-pop");
+      };
+      if (hover.current?.isOpen()) show();
+      else hoverTimer = setTimeout(show, HOVER_DELAY_MS);
     });
 
     // Leaving the canvas entirely, which mousemove never reports. That
     // includes moving onto a popup, so the glow stays when a popup is pinned:
     // it marks the road the popup is about, and the guide's words point at it.
     m.getCanvas().addEventListener("mouseout", () => {
-      hover.current?.remove();
+      stopHover();
       hazardHover.current?.remove();
       if (!hazardPinned.current && !guideHazard.current) setHazardHighlight(m, false);
       if (!pinned.current) {
