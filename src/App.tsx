@@ -42,10 +42,13 @@ const PILL_MS = 15000;
 
 // The tabs in the title bar, in order. The first is the one a plain address
 // opens on (DEFAULT_TAB in config.ts).
+// "Access to services" was "Detours" until 2026-11-17, when the user asked
+// for a name that says what the tab shows, and for it to go last. Its id
+// stays "detour", so old links still open it.
 const NAV_TABS: { value: TabId; label: string }[] = [
   { value: "isolation", label: "Functional isolation" },
-  { value: "detour", label: "Detours" },
   { value: "pinch", label: "Pinch points" },
+  { value: "detour", label: "Access to services" },
 ];
 const LEFT = 540;
 const MIN_LEFT = 300;
@@ -878,11 +881,11 @@ export default function App() {
             border: "1px solid #dfe3e8", zIndex: 5,
           }}>
             <Typography sx={{ fontWeight: 700, fontSize: 14.5, mb: 0.5 }}>
-              No detour data here
+              No access to services data here
             </Typography>
             <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-              Detours have been run for three counties so far. Pinch points cover
-              the whole state, so that tab has data everywhere.
+              Access to services has been worked out for three counties so far.
+              Pinch points cover the whole state, so that tab has data everywhere.
             </Typography>
             <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
               {COUNTIES.map((c) => (

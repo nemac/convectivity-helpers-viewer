@@ -81,7 +81,7 @@ export const DETOUR_SCORES: Score[] = [
   {
     base: "combined_band",
     compare: { more: "Scores a bigger weighted delay", most: "Scores the biggest weighted delay" },
-    label: "Detour band score",
+    label: "Weighted delay score",
     help: "Like extra travel time, but a delay counts for more when the trip was a quick one. Pushing a 5 minute trip out of reach matters more than adding the same minutes to an hour-long one.",
     raw: "combined_band_score",
   },
@@ -358,7 +358,7 @@ export const METHODOLOGY: Record<TabId, { file: string; label: string }[]> = {
     { file: "run-pinch-technical.md", label: "Pinch point analysis" },
   ],
   detour: [
-    { file: "run-detour-technical.md", label: "Detour analysis" },
+    { file: "run-detour-technical.md", label: "Access to services analysis" },
   ],
 };
 

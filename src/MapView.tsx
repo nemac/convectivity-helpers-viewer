@@ -1289,7 +1289,7 @@ function describeService(p: Record<string, any>): string {
   const kind = SERVICE_KINDS.find((k) => k.id === p.kind);
   return renderPopup(String(p.name || kind?.one || "Service"), kind?.one ?? "", "", [{
     heading: "Where trips go",
-    lines: [`One of the ${(kind?.label ?? "services").toLowerCase()} the detour trips are counted to.`],
+    lines: [`One of the ${(kind?.label ?? "services").toLowerCase()} the trips on this map are counted to.`],
   }], "", 360);
 }
 
