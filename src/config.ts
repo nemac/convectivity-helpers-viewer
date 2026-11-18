@@ -26,17 +26,17 @@ export const STYLES = styles as Record<string, FieldStyle>;
 // note on hover for anyone who wants it.
 export const METHODS = [
   {
-    id: "geometric",
-    label: "Geometric",
-    // Plain words, because the guide reads these out as well as the panel.
-    short: "A good place to start. Most roads land in the middle colours, and only a few at either end.",
-    help: "Breaks grow by a constant ratio, so classes get wider toward the top. Most roads gather in the middle colours, and both ends stay sparse: only a handful of roads score low enough for the first class or high enough for the last.",
-  },
-  {
     id: "log10",
     label: "Log base 10",
-    short: "Only the most extreme roads reach the top colours.",
+    // Plain words, because the guide reads these out as well as the panel.
+    short: "A good place to start. Only the most extreme roads reach the top colours.",
     help: "Equal breaks on the log of the score. The most selective of the three: use it when a handful of segments dwarf everything else and you want only those to stand out.",
+  },
+  {
+    id: "geometric",
+    label: "Geometric",
+    short: "Most roads land in the middle colours, and only a few at either end.",
+    help: "Breaks grow by a constant ratio, so classes get wider toward the top. Most roads gather in the middle colours, and both ends stay sparse: only a handful of roads score low enough for the first class or high enough for the last.",
   },
   {
     id: "quantile",
@@ -46,6 +46,10 @@ export const METHODS = [
   },
 ] as const;
 export type MethodId = (typeof METHODS)[number]["id"];
+
+// The classification every tab opens on, and the guide resets to (the user
+// chose Log base 10 on 2026-11-18; it was Geometric before).
+export const DEFAULT_METHOD: MethodId = "log10";
 
 // A score the map can draw: the class column is "<base>_<method>_class".
 export interface Score {

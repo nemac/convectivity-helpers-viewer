@@ -207,7 +207,7 @@ function panelSteps(tab: TabId, hazard?: Hazard): GuideStep[] {
   }
   steps.push({ place: "panel", target: "classes", title: "How roads are sorted into colours", lines: [
     "Every road gets a rank from 1 to 10. These three choices change where the line falls "
-      + "between one rank and the next. If you are not sure, leave it on Geometric.",
+      + "between one rank and the next. If you are not sure, leave it on Log base 10.",
   ], items: METHODS.map((m) => ({ label: m.label, text: m.short })) });
   steps.push({ place: "panel", target: "legend", title: "Hide the lower ranks", lines: [
     "The legend sits on the map, under the Basemap button. Click \"Legend\" to fold it away "

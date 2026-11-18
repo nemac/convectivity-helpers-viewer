@@ -17,7 +17,7 @@ import MapBoundary from "./MapBoundary";
 import Methodology from "./Methodology";
 import { BULLDOG_BLUE, NIGHT_SKY, ORG_LOGO_SCREEN, ORG_NAME, ORG_URL } from "./brand";
 import {
-  BASEMAPS, BasemapKey, COUNTIES, CUT_OFF_CLASS, DEFAULT_BASEMAP, DEFAULT_COUNTY, DEFAULT_CUTOFF,
+  BASEMAPS, BasemapKey, COUNTIES, CUT_OFF_CLASS, DEFAULT_BASEMAP, DEFAULT_COUNTY, DEFAULT_CUTOFF, DEFAULT_METHOD,
   DEFAULT_TAB, DETOUR_SCORES, HAZARDS, HAZARD_WORDS, ISOLATION_SCORES, METHODOLOGY, METHODS,
   MIN_RANKED, MethodId, NC_BOUNDS, NC_CENTER, NC_ZOOM, PINCH_SCORES, PINCH_TILES,
   STYLES, Score, TILES_BASE, TabId, classField, defaultHazard, hazardView, hazardsIn,
@@ -117,8 +117,8 @@ export default function App() {
     return ISOLATION_SCORES.some((s) => s.minutes === c) ? c : DEFAULT_CUTOFF;
   });
   const [method, setMethod] = useState<MethodId>(() => {
-    const m = fromUrl("method", "geometric");
-    return METHODS.some((x) => x.id === m) ? (m as MethodId) : "geometric";
+    const m = fromUrl("method", DEFAULT_METHOD);
+    return METHODS.some((x) => x.id === m) ? (m as MethodId) : DEFAULT_METHOD;
   });
   const [detourScore, setDetourScore] = useState(() => {
     const s = fromUrl("score", DETOUR_SCORES[0].base);
@@ -218,11 +218,11 @@ export default function App() {
 
   // Put the panel into the state the example is written for, then send the
   // map to the road. The steps quote ranks out of 10 on the first score and
-  // the geometric classes, so those are set rather than assumed.
+  // the default classification, so those are set rather than assumed.
   const startExample = (ex: Example) => {
     setTab(ex.tab);
     setCounty(ex.county);
-    setMethod("geometric");
+    setMethod(DEFAULT_METHOD);
     if (ex.tab === "detour") setDetourScore(DETOUR_SCORES[0].base);
     if (ex.hazard) { setHazardId(ex.hazard); setCutoff(DEFAULT_CUTOFF); }
     setMinClass(1);
@@ -285,7 +285,7 @@ export default function App() {
     if (!guide) return;
     if (steps[n]?.place === "road" && step?.place === "panel") {
       setCounty(guide.ex.county);
-      setMethod("geometric");
+      setMethod(DEFAULT_METHOD);
       if (guide.ex.tab === "detour") setDetourScore(DETOUR_SCORES[0].base);
       if (guide.ex.hazard) { setHazardId(guide.ex.hazard); setCutoff(DEFAULT_CUTOFF); }
       setFocus((f) => focusFor(guide.ex, f ? Number(f.key.split(":")[1]) + 1 : 1));
