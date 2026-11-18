@@ -185,6 +185,9 @@ interface HazardRun {
   isolatedRoads: number;
   isolatedBuildings: number;
   hazardBuildings: number;           // buildings in the hazard or on its closed roads
+  closedRoads: number;               // road segments inside the hazard, so closed
+  closedRoadM: number;               // their length, in metres
+  isolatedRoadM: number;             // length of the road segments cut off, in metres
   losing: Record<string, number>;     // roads losing any reach, per cutoff
   maxLoss: Record<string, number>;
   // Per "<cutoff>_<method>", the lowest and highest share lost within each

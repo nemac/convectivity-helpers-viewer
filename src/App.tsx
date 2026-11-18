@@ -351,6 +351,8 @@ export default function App() {
   }, [onPanelStep, panelTarget]);
 
   const onHazard = tab === "isolation" && hazard != null;
+  // The stats strip under the map: functional isolation, no guide open.
+  const showStats = onHazard && !guide;
   const tilesUrl = new URL(
     tab === "pinch" ? PINCH_TILES : onHazard ? hazard.tiles : countyObj.tiles, TILES_BASE).href;
   const sourceLayer = tab === "pinch" ? "pinch" : tab === "isolation" ? "roads" : "detour";
@@ -750,7 +752,8 @@ export default function App() {
       {/* Clipped to its own edges, so on a narrow window, where the panel
           leaves the map only a sliver, nothing on the map pushes the page
           into scrolling sideways. */}
-      <Box ref={mapAreaRef} sx={{ position: "relative", flex: 1, minWidth: 0, overflow: "hidden" }}>
+      <Box sx={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
+      <Box ref={mapAreaRef} sx={{ position: "relative", flex: 1, minWidth: 0, minHeight: 0, overflow: "hidden" }}>
         <MapBoundary>
           <MapView
             onEmptyChange={setMapEmpty}
@@ -907,6 +910,29 @@ export default function App() {
             </Stack>
           </Box>
         )}
+      </Box>
+      {/* What the hazard closes and cuts off, counted by the analysis, in
+          big numbers like the landslide viewer, in a strip under the map
+          rather than over it. Functional isolation only, and hidden while
+          the guide is open. */}
+      {showStats && (
+        <Box sx={{
+          flexShrink: 0, bgcolor: "#f4f6f8", borderTop: "1px solid #dfe3e8", px: 1.5, py: 1.25,
+        }}>
+          <Stack direction="row" spacing={1} alignItems="stretch" flexWrap="wrap" useFlexGap>
+            <Stat value={hazard.isolatedBuildings} label="buildings cut off" />
+            <Stat value={hazard.hazardBuildings} label={`buildings ${hazardWords.inside}`} />
+            <Stat value={hazard.isolatedRoads} label="road segments cut off" />
+            <Stat value={hazard.closedRoads} label="road segments closed" />
+            <Stat value={`${feet(hazard.isolatedRoadM + hazard.closedRoadM)} ft`}
+              label={`of road: ${feet(hazard.isolatedRoadM)} ft cut off, ${feet(hazard.closedRoadM)} ft closed`} />
+          </Stack>
+          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5, lineHeight: 1.3 }}>
+            Counted by the analysis for this hazard. Buildings and roads: Overture Maps Foundation,
+            release {hazard.overtureRelease}.
+          </Typography>
+        </Box>
+      )}
       </Box>
       </Box>
 
@@ -1223,3 +1249,32 @@ function Card({ title, guide, lit, children }: {
     </Box>
   );
 }
+
+// One big number with what it counts under it, and any smaller lines beside
+// it: the landslide viewer's stat card, a little smaller to keep the map clear.
+function Stat({ label, value, sub }: { label: string; value: number | string; sub?: string[] }) {
+  return (
+    <Stack direction="row" spacing={1.25} alignItems="flex-end"
+      sx={{ border: "1px solid #ddd", borderRadius: 1.5, px: 1.25, py: 0.75, bgcolor: "#fff", flex: "1 1 auto" }}>
+      <Box>
+        <Typography sx={{ fontSize: 28, lineHeight: 1, fontWeight: 800, color: NIGHT_SKY }}>
+          {typeof value === "number" ? value.toLocaleString() : value}
+        </Typography>
+        <Typography variant="caption" color="text.secondary" sx={{ display: "block", lineHeight: 1.3, mt: 0.25 }}>
+          {label}
+        </Typography>
+      </Box>
+      {sub && sub.length > 0 && (
+        <Box sx={{ pb: 2.25 }}>
+          {sub.map((line) => (
+            <Typography key={line} variant="caption" color="text.secondary"
+              sx={{ display: "block", lineHeight: 1.35 }}>{line}</Typography>
+          ))}
+        </Box>
+      )}
+    </Stack>
+  );
+}
+
+// Metres as whole feet, written with thousands separators.
+const feet = (m: number) => Math.round(m * 3.28084).toLocaleString();

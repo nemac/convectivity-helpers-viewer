@@ -154,15 +154,31 @@ function roadLayers(sourceLayer: string, classField: string, minClass: number, o
   const classes = STYLES[classField]?.classes ?? [];
   const layers: any[] = [];
   if (hazard) {
+    // Shown only while the hazard is hovered (or its popup is pinned): a
+    // bright yellow glow under every road it cuts off or closes: a wide,
+    // see-through halo over a narrower near-white core. The user found a
+    // mostly blurred glow too subtle, and a solid one too heavy and spiky.
+    // MapLibre's line-blur draws starbursts where short segments meet, so the
+    // halo has none, and the ends are cut square (round ends overlap and
+    // stack up where segments join).
     layers.push({
-      // Shown only while the hazard is hovered (or its popup is pinned): a
-      // yellow glow under every road it cuts off or closes.
       id: "hazard-hl-roads", type: "line", source: "roads", "source-layer": sourceLayer,
       filter: ["==", classOf(classField), CUT_OFF_CLASS],
-      layout: { "line-cap": "round", "line-join": "round", visibility: "none" },
+      layout: { "line-cap": "butt", "line-join": "round", visibility: "none" },
       paint: {
-        "line-color": HIGHLIGHT, "line-opacity": 0.95, "line-blur": 2,
-        "line-width": ["interpolate", ["linear"], ["zoom"], 10, 14, 14, 32, 17, 56],
+        "line-color": HIGHLIGHT, "line-opacity": 1,   // colour set by the basemap; see glowColors
+        "line-width": ["interpolate", ["linear"], ["zoom"], 10, 24, 14, 50, 17, 84],
+        "line-blur": 0,
+      },
+    });
+    layers.push({
+      id: "hazard-hl-roads-core", type: "line", source: "roads", "source-layer": sourceLayer,
+      filter: ["==", classOf(classField), CUT_OFF_CLASS],
+      layout: { "line-cap": "butt", "line-join": "round", visibility: "none" },
+      paint: {
+        "line-color": GLOW_CORE, "line-opacity": 1,
+        "line-width": ["interpolate", ["linear"], ["zoom"], 10, 12, 14, 26, 17, 44],
+        "line-blur": 1,
       },
     });
     layers.push({
@@ -221,8 +237,9 @@ function roadLayers(sourceLayer: string, classField: string, minClass: number, o
         id: "hazard-hl-bldg", type: "line", source: "roads", "source-layer": "hazard_buildings",
         layout: { "line-join": "round", visibility: "none" },
         paint: {
-          "line-color": HIGHLIGHT, "line-blur": 1.5,
-          "line-width": ["interpolate", ["linear"], ["zoom"], 12, 5, 16, 10],
+          "line-color": HIGHLIGHT, "line-opacity": 1,
+          "line-width": ["interpolate", ["linear"], ["zoom"], 12, 14, 16, 30],
+          "line-blur": 0,
         },
       },
       ...(["in_hazard", "cut_off"] as HazardBuildingStatus[]).flatMap((k) => [
@@ -254,7 +271,8 @@ const HAZARD_BLDG_LAYERS = (k: HazardBuildingStatus) =>
 // The hover highlight for the hazard's roads and buildings: a yellow none of
 // the road ranks, the cut-off red, the teal or the hatching use.
 const HIGHLIGHT = "#ffe14d";
-const HAZARD_HL_LAYERS = ["hazard-hl-roads", "hazard-hl-bldg"];
+const GLOW_CORE = "#fff6b8";      // the bright middle of the glow
+const HAZARD_HL_LAYERS = ["hazard-hl-roads", "hazard-hl-roads-core", "hazard-hl-bldg"];
 const ROAD_LAYER_IDS = [...HAZARD_HL_LAYERS, ...HAZARD_BLDG_LAYERS("in_hazard"), ...HAZARD_BLDG_LAYERS("cut_off"),
   "roads-casing", "roads-line", "hazard-tint", "hazard-fill", "hazard-rim", "hazard-line", "roads-hit"];
 
@@ -337,6 +355,24 @@ function markerData(h: Hazard | null | undefined): GeoJSON.FeatureCollection {
 // Darker on the dark basemap, where a light wash would read as a highlight.
 const maskColor = (basemap: BasemapKey) =>
   basemap === "darkgray" ? "rgba(0, 0, 0, 0.42)" : "rgba(20, 30, 45, 0.24)";
+
+// The hazard glow's colours. They look see-through, but are solid colours
+// mixed with the basemap's usual ground colour: with real transparency, every
+// place two glowing shapes overlap (segments meeting, a building beside a
+// road) stacked up into a brighter patch, which the user found odd. Solid
+// shapes merge into one glow instead.
+const BASEMAP_GROUND: Record<BasemapKey, [number, number, number]> = {
+  darkgray: [52, 52, 52], lightgray: [232, 232, 232], streets: [240, 237, 229], imagery: [74, 80, 66],
+};
+function mix(hex: string, ground: [number, number, number], share: number): string {
+  const c = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+  const [r, g, b] = c.map((v, i) => Math.round(v * share + ground[i] * (1 - share)));
+  return `rgb(${r}, ${g}, ${b})`;
+}
+const glowColors = (basemap: BasemapKey) => {
+  const ground = BASEMAP_GROUND[basemap] ?? BASEMAP_GROUND.darkgray;
+  return { halo: mix(HIGHLIGHT, ground, 0.5), core: mix(GLOW_CORE, ground, 0.7) };
+};
 
 interface Props {
   tilesUrl: string;             // pmtiles file to draw
@@ -708,11 +744,11 @@ export default function MapView({
     };
 
     // A road's (or a service's) popup waits until the mouse has rested on it
-    // for half a second, so sweeping across the map does not flash popups.
+    // for a quarter of a second, so sweeping across the map does not flash popups.
     // Once one is showing, moving onto the next road updates it at once.
     // Nothing pops up while the map is being dragged or zoomed.
     let hoverTimer: ReturnType<typeof setTimeout> | undefined;
-    const HOVER_DELAY_MS = 500;
+    const HOVER_DELAY_MS = 250;
     const stopHover = () => { clearTimeout(hoverTimer); hover.current?.remove(); };
     // the mouse button is down: a drag may be starting, or paused mid-way
     let pressed = false;
@@ -974,13 +1010,20 @@ export default function MapView({
       // must not still answer the cursor.
       if (m.getLayer("roads-hit")) m.setFilter("roads-hit", filter);
     }
-    if (m.getLayer("hazard-hl-roads")) m.setFilter("hazard-hl-roads", ["==", classOf(classField), CUT_OFF_CLASS]);
+    for (const id of ["hazard-hl-roads", "hazard-hl-roads-core"]) {
+      if (m.getLayer(id)) m.setFilter(id, ["==", classOf(classField), CUT_OFF_CLASS]);
+    }
     if (m.getLayer("roads-casing")) {
       m.setFilter("roads-casing", ["==", classOf(classField), CUT_OFF_CLASS]);
       m.setPaintProperty("roads-casing", "line-width", casingWidth(classes));
       m.setPaintProperty("roads-casing", "line-opacity", opacity);
     }
     if (m.getLayer("mask-fill")) m.setPaintProperty("mask-fill", "fill-color", maskColor(basemap));
+    const glow = glowColors(basemap);
+    for (const [id, c] of [["hazard-hl-roads", glow.halo], ["hazard-hl-roads-core", glow.core],
+                           ["hazard-hl-bldg", glow.halo]]) {
+      if (m.getLayer(id)) m.setPaintProperty(id, "line-color", c);
+    }
     for (const k of ["in_hazard", "cut_off"] as HazardBuildingStatus[]) {
       for (const id of HAZARD_BLDG_LAYERS(k)) {
         if (m.getLayer(id)) {
@@ -1512,9 +1555,10 @@ function hazardSide(m: Map, h: Hazard): { at: [number, number]; anchor: PopAncho
   const midLat = (s + n) / 2, midLon = (w + e) / 2;
   const width = m.getContainer().clientWidth, height = m.getContainer().clientHeight;
   const NEED_W = 320, NEED_H = 190;
+  const fitsUpright = (y: number) => y - NEED_H / 2 > 10 && y + NEED_H / 2 < height - 10;
   const sides: { at: [number, number]; anchor: PopAnchor; room: (x: number, y: number) => boolean }[] = [
-    { at: [e, midLat], anchor: "left", room: (x) => width - x > NEED_W },
-    { at: [w, midLat], anchor: "right", room: (x) => x > NEED_W },
+    { at: [e, midLat], anchor: "left", room: (x, y) => width - x > NEED_W && fitsUpright(y) },
+    { at: [w, midLat], anchor: "right", room: (x, y) => x > NEED_W && fitsUpright(y) },
     { at: [midLon, s], anchor: "top", room: (_, y) => height - y > NEED_H },
     { at: [midLon, n], anchor: "bottom", room: (_, y) => y > NEED_H + 60 },
   ];

@@ -118,6 +118,20 @@ for path in sorted(glob.glob(os.path.join(ANALYSIS, "output", "*_functional_isol
     finally:
         con.close()
 
+    # The roads it closes and the roads it cuts off: how many segments, and
+    # their length in metres (the GeoPackage is in UTM, so ST_Length is in
+    # metres). SpatiaLite's ST_Length comes through GDAL's SQLite dialect,
+    # since plain sqlite3 has no geometry functions. For the stats under the
+    # map.
+    sql = (f'SELECT SUM(CASE WHEN is_blocked THEN 1 ELSE 0 END), '
+           f'SUM(CASE WHEN is_blocked THEN ST_Length(geom) ELSE 0 END), '
+           f'SUM(CASE WHEN is_isolated AND NOT is_blocked THEN 1 ELSE 0 END), '
+           f'SUM(CASE WHEN is_isolated AND NOT is_blocked THEN ST_Length(geom) ELSE 0 END) '
+           f'FROM "{name}"')
+    res = subprocess.run(["ogr2ogr", "-f", "CSV", "/vsistdout/", path, "-dialect", "SQLite", "-sql", sql],
+                         capture_output=True, text=True, check=True)
+    closed_n, closed_m, cut_n, cut_m = (float(v or 0) for v in res.stdout.strip().splitlines()[-1].split(","))
+
     out[f"{county}/{hazard}"] = {
         "county": county,
         "hazard": hazard,
@@ -133,6 +147,9 @@ for path in sorted(glob.glob(os.path.join(ANALYSIS, "output", "*_functional_isol
         "isolatedRoads": props["isolated_segments"],
         "isolatedBuildings": props["isolated_buildings"],
         "hazardBuildings": props.get("hazard_buildings") or 0,
+        "closedRoads": int(closed_n),
+        "closedRoadM": round(closed_m),
+        "isolatedRoadM": round(cut_m),
         "losing": losing,
         "maxLoss": max_loss,
         "classRanges": class_ranges,
