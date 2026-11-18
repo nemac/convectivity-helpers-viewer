@@ -195,7 +195,8 @@ function panelSteps(tab: TabId, hazard?: Hazard): GuideStep[] {
     steps.push({ place: "panel", target: "services", title: "The places trips go to", lines: [
       "The icons on the map are the fire stations, medical facilities, schools, and grocery and "
         + "convenience stores the trips are counted to.",
-      "Untick one in this box to hide it, and tick it again to bring it back. All four start shown.",
+      "They are listed at the top of the legend on the map. Untick one to hide it, and tick it "
+        + "again to bring it back. All four start shown.",
     ] });
   } else {
     steps.push({ place: "panel", target: "shows", title: "What the map shows", lines: [
@@ -209,6 +210,8 @@ function panelSteps(tab: TabId, hazard?: Hazard): GuideStep[] {
       + "between one rank and the next. If you are not sure, leave it on Geometric.",
   ], items: METHODS.map((m) => ({ label: m.label, text: m.short })) });
   steps.push({ place: "panel", target: "legend", title: "Hide the lower ranks", lines: [
+    "The legend sits on the map, under the Basemap button. Click \"Legend\" to fold it away "
+      + "and again to bring it back.",
     "The colour key shows which colour goes with each rank, with 10 at the top.",
     "Slide the handle beside it up to hide the lower ranks. Only the most important "
       + "roads stay on the map.",

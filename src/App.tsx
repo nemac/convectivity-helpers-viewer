@@ -10,6 +10,9 @@ import SchoolIcon from "@mui/icons-material/School";
 import LocalGroceryStoreIcon from "@mui/icons-material/LocalGroceryStore";
 import PublicIcon from "@mui/icons-material/Public";
 import CheckIcon from "@mui/icons-material/Check";
+import LayersIcon from "@mui/icons-material/Layers";
+import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
+import KeyboardArrowUpIcon from "@mui/icons-material/KeyboardArrowUp";
 import MapBoundary from "./MapBoundary";
 import Methodology from "./Methodology";
 import { BULLDOG_BLUE, NIGHT_SKY, ORG_LOGO_SCREEN, ORG_NAME, ORG_URL } from "./brand";
@@ -30,6 +33,7 @@ import {
 // next visit opens with only the round button. Double-clicking the credits
 // line at the foot of the panel clears it; see resetRemembered below.
 const GUIDE_KEY = "guideClosed";
+const LEGEND_KEY = "legendOpen";
 const GUIDE_DONE = (() => {
   try { return window.localStorage.getItem(GUIDE_KEY) === "1"; } catch { return false; }
 })();
@@ -132,6 +136,14 @@ export default function App() {
     const raw = urlState.get("svc");
     if (raw == null) return SERVICE_KINDS.map((k) => k.id);
     return SERVICE_KINDS.map((k) => k.id).filter((id) => raw.split(",").includes(id));
+  });
+  // The legend on the map starts open; folding it is remembered.
+  const [legendOpen, setLegendOpen] = useState<boolean>(() => {
+    try { return window.localStorage.getItem(LEGEND_KEY) !== "closed"; } catch { return true; }
+  });
+  const toggleLegend = () => setLegendOpen((o) => {
+    try { window.localStorage.setItem(LEGEND_KEY, o ? "closed" : "open"); } catch { /* not remembered */ }
+    return !o;
   });
   const toggleService = (id: ServiceKind) =>
     setServices((cur) => (cur.includes(id) ? cur.filter((x) => x !== id)
@@ -311,14 +323,15 @@ export default function App() {
   const panelRef = useRef<HTMLDivElement>(null);
   const mapAreaRef = useRef<HTMLDivElement>(null);
   const coachRef = useRef<HTMLDivElement>(null);
-  const [coach, setCoach] = useState<{ top: number; arrow: number | null; room: number;
-    w?: number; h?: number }>({ top: 16, arrow: null, room: 600 });
+  const [coach, setCoach] = useState<{ top: number; left: number; arrow: number | null; room: number;
+    w?: number; h?: number }>({ top: 16, left: 16, arrow: null, room: 600 });
   React.useLayoutEffect(() => {
     if (!onPanelStep) return;
     const panel = panelRef.current;
     const target = panelTarget
-      ? panel?.querySelector<HTMLElement>(`[data-guide="${panelTarget}"]`) ?? null : null;
-    target?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      ? document.querySelector<HTMLElement>(`[data-guide="${panelTarget}"]`) ?? null : null;
+    // the legend and the services sit on the map now; only panel cards scroll
+    if (target && panel?.contains(target)) target.scrollIntoView({ block: "nearest", behavior: "smooth" });
     const place = () => {
       const area = mapAreaRef.current?.getBoundingClientRect();
       if (!area) return;
@@ -326,19 +339,22 @@ export default function App() {
       const room = Math.max(180, area.height - 24 - 26);
       const w = coachRef.current?.offsetWidth ?? 380;
       const h = coachRef.current?.offsetHeight ?? 300;
-      if (!target) { setCoach({ top: 16, arrow: null, room, w, h }); return; }
+      if (!target) { setCoach({ top: 16, left: 16, arrow: null, room, w, h }); return; }
       const t = target.getBoundingClientRect();
+      // a target on the map (the legend): the card goes to its right
+      const left = t.left >= area.left ? Math.round(t.right - area.left + 14) : 16;
       // Aim at the card's heading and first control rather than its middle,
       // since some cards (the colour key) are tall.
       const aim = t.top + Math.min(t.height / 2, 32) - area.top;
       const top = Math.max(12, Math.min(aim - 34, area.height - h - 12));
-      setCoach({ top, arrow: Math.max(18, Math.min(aim - top, h - 18)), room, w, h });
+      setCoach({ top, left, arrow: Math.max(18, Math.min(aim - top, h - 18)), room, w, h });
     };
     place();
     panel?.addEventListener("scroll", place, { passive: true });
     window.addEventListener("resize", place);
     const seen = new ResizeObserver(place);
     if (coachRef.current) seen.observe(coachRef.current);
+    if (target && !panel?.contains(target)) seen.observe(target);
     if (panel) {
       seen.observe(panel);
       Array.from(panel.children).forEach((c) => seen.observe(c));
@@ -387,6 +403,117 @@ export default function App() {
     window.addEventListener("mousemove", move);
     window.addEventListener("mouseup", up);
   };
+
+  // The legend, drawn on the map under the Basemap button (MapLegend). The
+  // same contents the panel's Legend card had: the colour key with each
+  // rank's share, the rank slider, the building checkboxes and the hazard's
+  // hatching, plus the services' checkboxes on Access to services.
+  const legendBody = (
+    <>
+      {tab === "detour" && (
+        <Box data-guide="services" sx={{ mb: 1.25, pb: 1, borderBottom: "1px solid #e6e8eb" }}>
+          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.25 }}>
+            Services on the map: the places the trips are counted to.
+          </Typography>
+          {SERVICE_KINDS.map((k) => (
+            <FormControlLabel key={k.id} sx={{ ml: -0.75, display: "flex", my: 0.25 }}
+              control={<Checkbox size="small" checked={services.includes(k.id)} sx={CHECK_SX}
+                onChange={() => toggleService(k.id)} />}
+              label={
+                <Stack direction="row" spacing={1} alignItems="center">
+                  <ServiceIcon kind={k.id} />
+                  <Typography variant="body2">{k.label}</Typography>
+                </Stack>
+              } />
+          ))}
+        </Box>
+      )}
+        <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
+          {tab === "isolation"
+            ? `Each rank, with the share of the places within a ${cutoff} minute drive that someone on those roads can no longer get to:`
+            : `${score.label}, ${METHODS.find((m) => m.id === method)?.label.toLowerCase()} breaks.`}
+        </Typography>
+        {unranked && hazard && (
+          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
+            Only {hazard.losing[String(cutoff)]}{" "}
+            {hazard.losing[String(cutoff)] === 1 ? "road loses" : "roads lose"} anything
+            within {cutoff} minutes, too few to rank, so the other roads are all in rank 1.
+          </Typography>
+        )}
+        {/* High class at the top, as a map legend reads. On the functional
+            isolation tab the red for roads cut off completely or closed
+            sits above 10, as the last value of the scale (the user asked
+            for it there rather than set apart). It never fades with the
+            slider, which never hides it. */}
+        {cutOffStyle && <LegendRow c={cutOffStyle} label="Cut off completely or closed" on />}
+        {/* The ranks, with the slider standing beside them: each rank's
+            row lines up with a stop on the slider, so the handle sits
+            beside the lowest rank still shown. Moving it up hides the
+            ranks below it. Set beside the list rather than under it, at
+            the user's request, to keep the panel short. */}
+        <Stack direction="row" spacing={1.5} alignItems="flex-start">
+          <Box sx={{ minWidth: 0 }}>
+            {[...ranks].reverse().map((c) => (
+              <LegendRow key={c.value} c={c} on={c.value >= minClass}
+                label={rankRanges ? `${c.label}: ${shareRange(rankRanges[c.value - 1])}` : c.label} />
+            ))}
+          </Box>
+          <Stack alignItems="center" sx={{ flexShrink: 0 }}>
+            {/* the blue part of the track runs beside the ranks still shown */}
+            <Slider orientation="vertical" size="small" min={1} max={10} step={1} marks value={minClass}
+              track="inverted"
+              onChange={(_, v) => setMinClass(v as number)}
+              valueLabelDisplay="auto"
+              valueLabelFormat={(v) => (v === 1 ? "all ranks" : `rank ${v} and up`)}
+              aria-label="Lowest rank shown"
+              sx={{
+                color: BULLDOG_BLUE,
+                height: (ranks.length - 1) * LEGEND_ROW, my: `${LEGEND_ROW / 2}px`,
+              }} />
+          </Stack>
+        </Stack>
+        <Typography variant="caption" color="text.secondary" sx={{ display: "block", lineHeight: 1.35, mt: 0.25 }}>
+          Slide the handle up to hide the lower ranks.
+        </Typography>
+        {/* Buildings, under the ranks at the user's request, with a heading
+            that links to Overture's page on its buildings data. Each row
+            is a checkbox, a footprint swatch in the colour the map draws,
+            and its name. */}
+        <Typography variant="caption" sx={{ display: "block", mt: 1.25, fontWeight: 700 }}>
+          Buildings, from{" "}
+          <Link href={OVERTURE_BUILDINGS_URL} target="_blank" rel="noopener" sx={{ color: BULLDOG_BLUE }}>
+            Overture Maps
+          </Link>
+        </Typography>
+        <BuildingRow checked={buildings} onChange={() => setBuildings((b) => !b)}
+          fill={BUILDING_COLOR} edge={BUILDING_OUTLINE} label="All buildings" />
+        {tab === "isolation" && ([
+          ["cut_off", "Cut off"],
+          ["in_hazard", `${hazardWords.inside.charAt(0).toUpperCase()}${hazardWords.inside.slice(1)}`],
+        ] as [HazardBuildingStatus, string][]).map(([k, label]) => (
+          <BuildingRow key={k} checked={hazardBldgs.includes(k)} onChange={() => toggleHazardBldg(k)}
+            fill={HAZARD_BUILDING_COLORS[k]} edge="#141414" label={label} />
+        ))}
+        {/* the hazard itself, in its hatching */}
+        {tab === "isolation" && (
+          <Box sx={{ mt: 1.5, pt: 1.25, borderTop: "1px solid #e6e8eb" }}>
+            <Stack direction="row" spacing={1} alignItems="flex-start">
+              <Box sx={{
+                width: 26, height: 16, flexShrink: 0, border: "2px solid #23272e", borderRadius: "2px",
+                background: "repeating-linear-gradient(135deg, #23272e 0 2px, #fff 2px 3px, "
+                  + "transparent 3px 7px, #fff 7px 8px)",
+              }} />
+              <Typography variant="caption" sx={{ lineHeight: 1.45 }}>
+                <b>{hazardWords.area.charAt(0).toUpperCase() + hazardWords.area.slice(1)}.</b>{" "}
+                Every road inside it is closed and drawn in dark red, like the roads it cuts off
+                completely. The shaded part of the map lies beyond the{" "}
+                {hazard?.bufferMiles ?? 20} miles around it that this run covers.
+              </Typography>
+            </Stack>
+          </Box>
+        )}
+    </>
+  );
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", height: "100vh" }}>
@@ -589,24 +716,6 @@ export default function App() {
             </Card>
           )}
 
-          {tab === "detour" && (
-            <Card title="Services on the map" guide="services" lit={panelTarget === "services"}>
-              <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.25 }}>
-                The places the trips are counted to.
-              </Typography>
-              {SERVICE_KINDS.map((k) => (
-                <FormControlLabel key={k.id} sx={{ ml: -0.75, display: "flex", my: 0.25 }}
-                  control={<Checkbox size="small" checked={services.includes(k.id)} sx={CHECK_SX}
-                    onChange={() => toggleService(k.id)} />}
-                  label={
-                    <Stack direction="row" spacing={1} alignItems="center">
-                      <ServiceIcon kind={k.id} />
-                      <Typography variant="body2">{k.label}</Typography>
-                    </Stack>
-                  } />
-              ))}
-            </Card>
-          )}
 
           <Card title="Classification" guide="classes" lit={panelTarget === "classes"}>
             <RadioGroup value={method}
@@ -629,93 +738,6 @@ export default function App() {
             </Typography>
           </Card>
 
-          <Card title="Legend" guide="legend" lit={panelTarget === "legend"}>
-            <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
-              {tab === "isolation"
-                ? `Each rank, with the share of the places within a ${cutoff} minute drive that someone on those roads can no longer get to:`
-                : `${score.label}, ${METHODS.find((m) => m.id === method)?.label.toLowerCase()} breaks.`}
-            </Typography>
-            {unranked && hazard && (
-              <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
-                Only {hazard.losing[String(cutoff)]}{" "}
-                {hazard.losing[String(cutoff)] === 1 ? "road loses" : "roads lose"} anything
-                within {cutoff} minutes, too few to rank, so the other roads are all in rank 1.
-              </Typography>
-            )}
-            {/* High class at the top, as a map legend reads. On the functional
-                isolation tab the red for roads cut off completely or closed
-                sits above 10, as the last value of the scale (the user asked
-                for it there rather than set apart). It never fades with the
-                slider, which never hides it. */}
-            {cutOffStyle && <LegendRow c={cutOffStyle} label="Cut off completely or closed" on />}
-            {/* The ranks, with the slider standing beside them: each rank's
-                row lines up with a stop on the slider, so the handle sits
-                beside the lowest rank still shown. Moving it up hides the
-                ranks below it. Set beside the list rather than under it, at
-                the user's request, to keep the panel short. */}
-            <Stack direction="row" spacing={2} alignItems="flex-start">
-              <Box sx={{ minWidth: 0 }}>
-                {[...ranks].reverse().map((c) => (
-                  <LegendRow key={c.value} c={c} on={c.value >= minClass}
-                    label={rankRanges ? `${c.label}: ${shareRange(rankRanges[c.value - 1])}` : c.label} />
-                ))}
-              </Box>
-              <Stack alignItems="center" sx={{ flexShrink: 0 }}>
-                {/* the blue part of the track runs beside the ranks still shown */}
-                <Slider orientation="vertical" size="small" min={1} max={10} step={1} marks value={minClass}
-                  track="inverted"
-                  onChange={(_, v) => setMinClass(v as number)}
-                  valueLabelDisplay="auto"
-                  valueLabelFormat={(v) => (v === 1 ? "all ranks" : `rank ${v} and up`)}
-                  aria-label="Lowest rank shown"
-                  sx={{
-                    color: BULLDOG_BLUE,
-                    height: (ranks.length - 1) * LEGEND_ROW, my: `${LEGEND_ROW / 2}px`,
-                  }} />
-              </Stack>
-              <Typography variant="caption" color="text.secondary"
-                sx={{ alignSelf: "flex-end", maxWidth: 110, lineHeight: 1.35, pb: 0.25 }}>
-                Slide up to hide the lower ranks.
-              </Typography>
-            </Stack>
-            {/* Buildings, under the ranks at the user's request, with a heading
-                that links to Overture's page on its buildings data. Each row
-                is a checkbox, a footprint swatch in the colour the map draws,
-                and its name. */}
-            <Typography variant="caption" sx={{ display: "block", mt: 1.25, fontWeight: 700 }}>
-              Buildings, from{" "}
-              <Link href={OVERTURE_BUILDINGS_URL} target="_blank" rel="noopener" sx={{ color: BULLDOG_BLUE }}>
-                Overture Maps
-              </Link>
-            </Typography>
-            <BuildingRow checked={buildings} onChange={() => setBuildings((b) => !b)}
-              fill={BUILDING_COLOR} edge={BUILDING_OUTLINE} label="All buildings" />
-            {tab === "isolation" && ([
-              ["cut_off", "Cut off"],
-              ["in_hazard", `${hazardWords.inside.charAt(0).toUpperCase()}${hazardWords.inside.slice(1)}`],
-            ] as [HazardBuildingStatus, string][]).map(([k, label]) => (
-              <BuildingRow key={k} checked={hazardBldgs.includes(k)} onChange={() => toggleHazardBldg(k)}
-                fill={HAZARD_BUILDING_COLORS[k]} edge="#141414" label={label} />
-            ))}
-            {/* the hazard itself, in its hatching */}
-            {tab === "isolation" && (
-              <Box sx={{ mt: 1.5, pt: 1.25, borderTop: "1px solid #e6e8eb" }}>
-                <Stack direction="row" spacing={1} alignItems="flex-start">
-                  <Box sx={{
-                    width: 26, height: 16, flexShrink: 0, border: "2px solid #23272e", borderRadius: "2px",
-                    background: "repeating-linear-gradient(135deg, #23272e 0 2px, #fff 2px 3px, "
-                      + "transparent 3px 7px, #fff 7px 8px)",
-                  }} />
-                  <Typography variant="caption" sx={{ lineHeight: 1.45 }}>
-                    <b>{hazardWords.area.charAt(0).toUpperCase() + hazardWords.area.slice(1)}.</b>{" "}
-                    Every road inside it is closed and drawn in dark red, like the roads it cuts off
-                    completely. The shaded part of the map lies beyond the{" "}
-                    {hazard?.bufferMiles ?? 20} miles around it that this run covers.
-                  </Typography>
-                </Stack>
-              </Box>
-            )}
-          </Card>
 
           {/* There is no Map card: the basemap is picked with the globe
               button on the map, and the road opacity slider was removed at
@@ -779,7 +801,7 @@ export default function App() {
             guideOnHazard={onHazard && step?.showsHazard === true}
             guideStep={guide && !onPanelStep ? guide.step : -1}
             guideCard={guide && onPanelStep && coach.w && coach.h
-              ? [16, coach.top, 16 + coach.w, coach.top + coach.h] : null}
+              ? [coach.left, coach.top, coach.left + coach.w, coach.top + coach.h] : null}
             focus={focus}
             onFocusFeature={(key, props) => {
               // called once the guide's popup is on the road, found or not
@@ -799,6 +821,15 @@ export default function App() {
         </MapBoundary>
 
         <BasemapPicker value={basemap} onChange={setBasemap} />
+        {/* Folded while the guide talks about the road or other panel cards,
+            so it never covers the hazard or the guide; open on the guide's
+            steps about the legend and the services. */}
+        <MapLegend
+          open={guide ? panelTarget === "legend" || panelTarget === "services" : legendOpen}
+          lit={panelTarget === "legend" || panelTarget === "services"}
+          onToggle={toggleLegend}>
+          {legendBody}
+        </MapLegend>
 
         {/* The guide during the steps about the panel: a dark card on the
             map's left edge, its arrow on the panel card being described. */}
@@ -806,7 +837,7 @@ export default function App() {
           <Box ref={coachRef} className="guide-card"
             style={{ ["--guide-room" as string]: `${coach.room}px` }}
             sx={{
-            position: "absolute", left: 16, top: coach.top, zIndex: 6,
+            position: "absolute", left: coach.left, top: coach.top, zIndex: 6,
             bgcolor: NIGHT_SKY, color: "#fff", borderRadius: "12px", p: "14px 16px 12px",
             boxShadow: "0 12px 32px rgba(0,20,45,0.38)", transition: "top 250ms ease",
           }}>
@@ -1162,6 +1193,64 @@ function BasemapPicker({ value, onChange }: { value: BasemapKey; onChange: (k: B
         </MenuList>
       </Popover>
     </>
+  );
+}
+
+// The legend on the map, under Basemap and in the same style. Folded, it is
+// a white pill with a layers icon, "Legend" and a down chevron (just the
+// icon on a phone). Open, the same box grows into a card: the pill becomes
+// its header, with the chevron pointing up, and the legend sits right under
+// it, scrolling when the map is short. The user asked for it on the map,
+// open to start, attached to its button and shrinking when folded.
+function MapLegend({ open, lit, onToggle, children }: {
+  open: boolean; lit: boolean; onToggle: () => void; children: React.ReactNode;
+}) {
+  const Chevron = open ? KeyboardArrowUpIcon : KeyboardArrowDownIcon;
+  const shadow = "0 2px 6px rgba(0,20,45,0.25)";
+  return (
+    <Box data-guide="legend" sx={{
+      position: "absolute", top: 58, left: 10, zIndex: 3, bgcolor: "#fff",
+      borderRadius: open ? "14px" : "20px", boxShadow: shadow,
+      width: open ? 300 : "auto", maxWidth: "calc(100% - 20px)",
+      maxHeight: "calc(100% - 58px - 100px)", display: "flex", flexDirection: "column",
+      overflow: "hidden", boxSizing: "border-box",
+      ...(lit && {
+        boxShadow: `0 0 0 3px ${BULLDOG_BLUE}`,
+        animation: "guidePulse 1.8s ease-in-out infinite",
+        "@keyframes guidePulse": {
+          "0%, 100%": { boxShadow: `0 0 0 3px ${BULLDOG_BLUE}, 0 0 0 3px rgba(0,61,165,0.25)` },
+          "50%": { boxShadow: `0 0 0 3px ${BULLDOG_BLUE}, 0 0 0 10px rgba(0,61,165,0.12)` },
+        },
+        "@media (prefers-reduced-motion: reduce)": { animation: "none" },
+      }),
+    }}>
+      <Tooltip title={open ? "Fold the legend away" : "Show the legend"} placement="right">
+        <ButtonBase aria-label={open ? "Fold the legend away" : "Show the legend"}
+          aria-expanded={open} aria-controls="map-legend" onClick={onToggle}
+          sx={{
+            flexShrink: 0, justifyContent: "flex-start", gap: 0.75, height: 40, minWidth: 40,
+            px: { xs: 0, md: 1.5 }, pr: { md: 1 }, color: NIGHT_SKY, fontSize: 14, fontWeight: 700,
+            borderRadius: "inherit", width: open ? "100%" : "auto",
+            borderBottom: open ? "1px solid #e6e8eb" : "none",
+            borderBottomLeftRadius: open ? 0 : undefined, borderBottomRightRadius: open ? 0 : undefined,
+            "&:hover": { bgcolor: "#eef2f7" },
+            "&.Mui-focusVisible": { outline: `2px solid ${BULLDOG_BLUE}`, outlineOffset: -2 },
+          }}>
+          <LayersIcon fontSize="small" sx={{ ml: { xs: "10px", md: 0 } }} />
+          <Box component="span" aria-hidden="true" sx={{ display: { xs: open ? "inline" : "none", md: "inline" } }}>
+            Legend
+          </Box>
+          <Chevron fontSize="small" sx={{ display: { xs: open ? "inline-block" : "none", md: "inline-block" },
+            ml: open ? "auto" : -0.25 }} />
+        </ButtonBase>
+      </Tooltip>
+      {open && (
+        <Box id="map-legend" role="region" aria-label="Legend"
+          sx={{ overflowY: "auto", px: 1.75, pt: 1.25, pb: 1.5 }}>
+          {children}
+        </Box>
+      )}
+    </Box>
   );
 }
 
