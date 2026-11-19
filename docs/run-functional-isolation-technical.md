@@ -98,7 +98,7 @@ within a travel-cost threshold constitutes the measure (Hansen 1959).
 Buildings are a deliberately generic proxy for "places where people are or go."
 A house, a factory, a church, a clinic and a shop are all buildings. Using them
 avoids pre-deciding which destination types count, which a named-facility list
-would require. The cost is that a single-family home and a thirty-storey tower
+would require. The cost is that a single-family home and a thirty-story tower
 count the same, so the measure is a count of destinations rather than of people
 or of activity. Section 5 covers what this excludes.
 
@@ -179,7 +179,7 @@ response adopted here.
 
 Consider a location whose 5-minute reach is unchanged, whose 30-minute reach
 collapses by 95%, and whose 240-minute reach recovers to within 40% of baseline.
-That is a community whose immediate neighbourhood still functions, whose regional
+That is a community whose immediate neighborhood still functions, whose regional
 access is gone, and which can still reach the wider region given hours rather
 than minutes. That is the signature of functional isolation, and it is only
 visible as a **shape across cutoffs**.

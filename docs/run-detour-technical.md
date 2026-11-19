@@ -41,7 +41,7 @@ and only if they share a connector ID.
 
 This avoids the standard failure mode of coordinate-matching topology, where
 service roads and minor streets whose endpoint coordinates differ by a few
-centimetres get split into separate components, while bridges and tunnels that
+centimeters get split into separate components, while bridges and tunnels that
 cross in plan view get incorrectly joined. Overture's connector model encodes
 the intended topology directly.
 
@@ -57,6 +57,14 @@ travel_time_sec = segment_length_m / (assumed_speed_mph * 0.44704)
 present, otherwise a per-class default (motorway 65, trunk 55, primary 45,
 secondary 40, tertiary 35, unclassified 30, residential 25, living_street 15,
 service 15).
+
+A posted speed that no road of its class could carry in North Carolina is
+treated as a data error and gets the class default too. Overture has a few,
+such as a service road at 80 mph, an interstate at 10 mph and residential
+streets at 5 mph. The ranges are `PLAUSIBLE_SPEED_MPH_BY_CLASS` in the script,
+for example 25 to 70 mph for an interstate and 5 to 35 for a service road. This
+rule was added in November 2026, after the Haywood, Mecklenburg and New Hanover
+detour runs, so those outputs still use the posted values as they were.
 
 Every "shortest path" in the implementation is therefore a **fastest path by
 free-flow drive time**. No congestion, no turn penalties, no signal delay. See

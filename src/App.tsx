@@ -674,7 +674,7 @@ export default function App() {
     flyNext.current = true;
     setRunId(res.run_id);
   };
-  // The outline in the drawing colour: the area just drawn, while it is
+  // The outline in the drawing color: the area just drawn, while it is
   // named and run.
   const runArea = areas.find((a) => a.run_id === runId);
   const keepShape = naming ? drawn
@@ -712,7 +712,7 @@ export default function App() {
       // a target on the map (the legend): the card goes to its right
       const left = t.left >= area.left ? Math.round(t.right - area.left + 14) : 16;
       // Aim at the card's heading and first control rather than its middle,
-      // since some cards (the colour key) are tall.
+      // since some cards (the color key) are tall.
       const aim = t.top + Math.min(t.height / 2, 32) - area.top;
       const top = Math.max(12, Math.min(aim - 34, area.height - h - 12));
       setCoach({ top, left, arrow: Math.max(18, Math.min(aim - top, h - 18)), room, w, h });
@@ -789,7 +789,7 @@ export default function App() {
   };
 
   // The legend, drawn on the map under the Basemap button (MapLegend). The
-  // same contents the panel's Legend card had: the colour key with each
+  // same contents the panel's Legend card had: the color key with each
   // rank's share, the rank slider, the building checkboxes and the hazard's
   // hatching, plus the services' checkboxes on Access to services.
   const legendBody = (
@@ -861,7 +861,7 @@ export default function App() {
         </Typography>
         {/* Buildings, under the ranks at the user's request, with a heading
             that links to Overture's page on its buildings data. Each row
-            is a checkbox, a footprint swatch in the colour the map draws,
+            is a checkbox, a footprint swatch in the color the map draws,
             and its name. */}
         <Typography variant="caption" sx={{ display: "block", mt: 1.25, fontWeight: 700 }}>
           Buildings, from{" "}
@@ -1023,7 +1023,7 @@ export default function App() {
         }} />
 
         <Box ref={panelRef} sx={{ p: 2, overflowY: "auto", flex: 1 }}>
-          {/* The same box on every tab, first: the name of what the colours
+          {/* The same box on every tab, first: the name of what the colors
               measure and a sentence or two on what it means. On the detour
               and functional isolation tabs the lists that change it follow. */}
           {/* The panel used to open with a paragraph on what each tab is
@@ -1532,7 +1532,7 @@ const LAUNCHER_WIDE = 184;
 // The way back into the guide. Right after the guide closes it is a pill
 // under the middle of the map, where the eye already is. After PILL_MS it
 // slides to the bottom left corner as a circle with a question mark, and
-// widens back into the labelled pill under the mouse or keyboard focus.
+// widens back into the labeled pill under the mouse or keyboard focus.
 // Night Sky with a white rim, so it holds up on the dark basemap too.
 function GuideLauncher({ shape, onStart }: { shape: "pill" | "circle"; onStart: () => void }) {
   const circle = shape === "circle";
@@ -1824,7 +1824,7 @@ function LegendRow({ c, label, on }: { c: { color: string; widthMm: number }; la
 }
 
 // One kind of building in the legend: its checkbox, a small footprint in the
-// colour the map draws it, and its name.
+// color the map draws it, and its name.
 function BuildingRow({ checked, onChange, fill, edge, label }: {
   checked: boolean; onChange: () => void; fill: string; edge: string; label: string;
 }) {

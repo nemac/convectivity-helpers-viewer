@@ -1,7 +1,7 @@
-// UNC Asheville brand colours, from the university's graphic standards:
+// UNC Asheville brand colors, from the university's graphic standards:
 // https://communication.unca.edu/design/color-palette/
 //
-// Bulldog Blue is the signature colour and carries the primary interface
+// Bulldog Blue is the signature color and carries the primary interface
 // elements. Night Sky is the darker navy used where blue sits behind text or
 // needs to recede, such as the header band.
 export const BULLDOG_BLUE = "#003DA5";   // PANTONE 293

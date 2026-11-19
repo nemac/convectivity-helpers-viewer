@@ -3,7 +3,7 @@
 // dialog and the messages on the map while drawing and running; on Pinch
 // points the alternate routes tool inside a clicked road's popup. The
 // approved mockups are the spec for all of it. No orange and no red anywhere:
-// the user ruled both out. Green is the drawing tool's colour.
+// the user ruled both out. Green is the drawing tool's color.
 import React, { useEffect, useRef, useState } from "react";
 import {
   Box, Button, ButtonBase, CircularProgress, Dialog, DialogActions, DialogContent, DialogTitle, IconButton, Link,
@@ -30,7 +30,7 @@ import {
 
 // Only on the dev server at localhost: whether the two tools send their work
 // to the copy on this computer or to AWS. One setting for both tools. When
-// the local copy does not answer, "This computer" is greyed out and a link
+// the local copy does not answer, "This computer" is grayed out and a link
 // opens the setup note (docs/local-setup.md). A production build never shows
 // it: import.meta.env.DEV is false there and the whole body is dropped.
 export function TargetSwitch({ onSetup }: { onSetup?: () => void }) {
@@ -629,7 +629,7 @@ const savedDate = (iso: string) =>
 
 // The alternate routes tool, inside a clicked road's popup on Pinch points.
 // It shows the road's usual numbers with the button under them, then, once
-// the routes are back, the ways round in place of the numbers. A set reopened
+// the routes are back, the ways around in place of the numbers. A set reopened
 // from "Your routes" (ctx.saved) starts on its saved routes and asks the API
 // for nothing. `onSave` keeps a set in this browser for 7 days. A set opened
 // from someone's shared link (ctx.saved.shared) shows the same way and can be
@@ -760,7 +760,7 @@ export function RoutesBox({ ctx, onSave, removed = null, onGone, onShowing, onSe
             routes the server kept; a set saved before it did has no id, and
             no Share button. */}
         <Stack direction="row" alignItems="flex-start" justifyContent="space-between" spacing={1}>
-          <Typography sx={{ fontWeight: 700, fontSize: 15, lineHeight: 1.3, pt: 0.25 }}>Ways round if {road} closes</Typography>
+          <Typography sx={{ fontWeight: 700, fontSize: 15, lineHeight: 1.3, pt: 0.25 }}>Ways around if {road} closes</Typography>
           {ok && (routeId || reopened) && (
             <ShareButton small below title="Copy a link to these routes"
               link={async () => shareLink({ tab: "pinch", route: routeId ?? await shareIdFor(reopened!) }, true)} />
@@ -790,7 +790,7 @@ export function RoutesBox({ ctx, onSave, removed = null, onGone, onShowing, onSe
         {ok && result.routes.length < 3 && (
           <Box role="note" sx={{ mt: 1, px: 1.25, py: 0.75, borderRadius: 1.5, bgcolor: "#fff1c7", color: "#6b4b00" }}>
             <Typography sx={{ fontSize: 13, fontWeight: 800, lineHeight: 1.4 }}>
-              {result.routes.length === 1 ? "Only 1 way round was found." : `Only ${result.routes.length} ways round were found.`}
+              {result.routes.length === 1 ? "Only 1 way around was found." : `Only ${result.routes.length} ways around were found.`}
             </Typography>
           </Box>
         )}
@@ -839,7 +839,7 @@ export function RoutesBox({ ctx, onSave, removed = null, onGone, onShowing, onSe
                         {r.steps.map((s, k) => <li key={k}>{s}</li>)}
                       </Box>
                       <Typography sx={{ fontSize: 12, color: "#57606a", mt: 0.5 }}>
-                        The whole way round: {mins(r.minutes)}, {miles(r.miles)}.{r.note ? ` ${r.note}` : ""}
+                        The whole way around: {mins(r.minutes)}, {miles(r.miles)}.{r.note ? ` ${r.note}` : ""}
                       </Typography>
                     </>
                   )}
@@ -940,7 +940,7 @@ export function RoutesBox({ ctx, onSave, removed = null, onGone, onShowing, onSe
         {busy && (
           <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 0.75 }}>
             <CircularProgress size={14} thickness={6} sx={{ color: BULLDOG_BLUE }} />
-            <Typography sx={{ fontSize: 12.5 }}>Finding ways round...</Typography>
+            <Typography sx={{ fontSize: 12.5 }}>Finding ways around...</Typography>
           </Stack>
         )}
         {error && <Typography role="alert" sx={{ fontSize: 12.5, fontWeight: 700, color: NIGHT_SKY, mt: 0.75 }}>{error}</Typography>}

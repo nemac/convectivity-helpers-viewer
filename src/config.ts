@@ -1,7 +1,7 @@
 // What the viewer offers: the three tabs, the counties and hazards they cover,
 // the scores each tab can draw, and the basemaps behind them.
 //
-// Symbology is not here. The colours and widths come from styles.json, which
+// Symbology is not here. The colors and widths come from styles.json, which
 // scripts/qml_to_styles.mjs generates from the .qml files in output/, so QGIS
 // and the browser draw the same thing from the same source.
 import styles from "./styles.json";
@@ -29,19 +29,19 @@ export const METHODS = [
     id: "log10",
     label: "Log base 10",
     // Plain words, because the guide reads these out as well as the panel.
-    short: "A good place to start. Only the most extreme roads reach the top colours.",
+    short: "A good place to start. Only the most extreme roads reach the top colors.",
     help: "Equal breaks on the log of the score. The most selective of the three: use it when a handful of segments dwarf everything else and you want only those to stand out.",
   },
   {
     id: "geometric",
     label: "Geometric",
-    short: "Most roads land in the middle colours, and only a few at either end.",
-    help: "Breaks grow by a constant ratio, so classes get wider toward the top. Most roads gather in the middle colours, and both ends stay sparse: only a handful of roads score low enough for the first class or high enough for the last.",
+    short: "Most roads land in the middle colors, and only a few at either end.",
+    help: "Breaks grow by a constant ratio, so classes get wider toward the top. Most roads gather in the middle colors, and both ends stay sparse: only a handful of roads score low enough for the first class or high enough for the last.",
   },
   {
     id: "quantile",
     label: "Quantile",
-    short: "The same number of roads in every colour. It shows order rather than size.",
+    short: "The same number of roads in every color. It shows order rather than size.",
     help: "Equal counts per class, fitted on the scoring segments only. Shows rank rather than magnitude, so the top class is as common as every other.",
   },
 ] as const;
@@ -284,7 +284,7 @@ export function hazardView(h: Hazard): { center: [number, number]; zoom: number 
 
 // The buildings a hazard run writes out: cut off (on roads with no way out)
 // in the cut-off red, and in the hazard (inside it, or on its closed roads)
-// in teal, a colour none of the road ranks use. A lighter red was tried for
+// in teal, a color none of the road ranks use. A lighter red was tried for
 // the second and was hard to tell apart; both now carry a white halo and a
 // dark edge (see MapView), and are drawn over everything else the run draws.
 export type HazardBuildingStatus = "cut_off" | "in_hazard";
@@ -335,8 +335,8 @@ export const SERVICES = [
 // review sheet: Local Fire Department, Health And Safety, School and Local
 // Grocery Store. The path data below is copied from @mui/icons-material so the
 // map can draw them on a canvas; the panel uses the icon components
-// themselves. One colour for all four, Night Sky, so they do not compete with
-// the road colours.
+// themselves. One color for all four, Night Sky, so they do not compete with
+// the road colors.
 //
 // The points come from public/data/services.geojson, which
 // scripts/make_services.py cuts from the files the detour runs were given.
@@ -417,7 +417,7 @@ export const DEFAULT_BASEMAP: BasemapKey = "darkgray";
 
 // Overture's buildings, for context on every tab, off until the reader ticks
 // the box. Read straight from Overture's own public PMTiles in the browser,
-// as the landslide viewer does, and drawn in the same colours: a pale yellow
+// as the landslide viewer does, and drawn in the same colors: a pale yellow
 // fill with a brown edge. Nothing is counted or matched against the roads;
 // it is a picture of where the buildings are.
 //
@@ -456,7 +456,7 @@ export function humanSeconds(s: number): string {
   return `${(s / 3600).toFixed(1)} h`;
 }
 
-// Overture's road classes in words a reader will recognise. Anything not
+// Overture's road classes in words a reader will recognize. Anything not
 // listed falls back to the raw value with underscores removed.
 const ROAD_TYPES: Record<string, string> = {
   motorway: "Interstate or freeway",

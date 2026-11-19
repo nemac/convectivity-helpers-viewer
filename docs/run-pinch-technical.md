@@ -62,12 +62,12 @@ block over.
 The condition worth finding is the conjunction: **heavily used and poorly
 substituted**. Multiplying is the simplest operator with the property that a
 near-zero on either factor drives the result to near zero, which is the
-behaviour the question demands. Berdica (2002) makes the underlying point that
+behavior the question demands. Berdica (2002) makes the underlying point that
 vulnerability is about serviceability rather than connectivity, and a network
 can remain fully connected in the graph sense while functioning badly.
 
 The cost of multiplying is that the score is on an uninterpretable scale: it is
-metres times a unitless 0-1 weight. It ranks segments, and it is not a quantity
+meters times a unitless 0-1 weight. It ranks segments, and it is not a quantity
 anyone can act on directly. Section 5 returns to this.
 
 ---
@@ -79,7 +79,7 @@ anyone can act on directly. Section 5 returns to this.
 The graph is built from Overture Maps transportation segments, using Overture's
 explicit `connectors[]` arrays as graph vertices. Two segments are adjacent if
 and only if they share a connector ID. Edge weights are segment length in
-metres, so the detour test is in distance rather than time.
+meters, so the detour test is in distance rather than time.
 
 The connector lists are read from the `connector_ids_json` column written by
 `run-connectivity-buildings.py`, so the graph is rebuilt without re-querying
@@ -162,7 +162,7 @@ than unimportant.
 
 | Column | Meaning |
 |---|---|
-| `detour_len_m` | Extra metres if the segment closes. `MAX_DETOUR_CHECK x 2` means no alternative was found within the cutoff. |
+| `detour_len_m` | Extra meters if the segment closes. `MAX_DETOUR_CHECK x 2` means no alternative was found within the cutoff. |
 | `centrality_raw` | Demand-weighted betweenness, unscaled |
 | `centrality_norm` | The same, scaled to 0-1. This is the term used in the product. |
 | `centrality_log` | `log1p` of the raw score, for display when the raw values span orders of magnitude |
@@ -197,7 +197,7 @@ route that is short in distance but already congested, or where the real cost
 falls on trips that merely passed nearby. `run-detour.py` measures the
 origin-to-destination version against named facilities.
 
-**Distance, not time.** Edge weights are metres. A 3 km detour on an interstate
+**Distance, not time.** Edge weights are meters. A 3 km detour on an interstate
 and a 3 km detour on a gravel road score identically.
 
 **Centrality is computed from a sample of sources.** The betweenness scores are
@@ -211,13 +211,13 @@ not how many people are in them.
 **Divided highways score low**, for the structural reason in section 3.4.
 
 **No turn restrictions, grades, or vehicle classes.** The network is undirected
-and unrestricted, so some modelled detours are not legally drivable.
+and unrestricted, so some modeled detours are not legally drivable.
 
 ---
 
 ## 6. Alternate routes around a closed road (in testing)
 
-Clicking a road gives up to three ways round it if it is closed, each with
+Clicking a road gives up to three ways around it if it is closed, each with
 turn-by-turn directions, the extra time and distance, and a label: Truck safe,
 Not truck safe, or Possibly truck safe with the reason. Unlike the pinch
 score, these routes follow one-way rules and turn restrictions, on the same
@@ -234,7 +234,7 @@ It is still in testing on NEMAC's computer and not yet online.
 - Click a road, then "Get alternate and truck-safe routes" in its popup.
   Hovering a route on the map lights its row in the popup, and hovering a row
   lights the route on the map.
-- When only 1 or 2 ways round are found, the popup says so in bold above the
+- When only 1 or 2 ways around are found, the popup says so in bold above the
   routes, with the reason under them.
 - The routes can be downloaded as a CSV file, one row per step.
 - A set of routes can be saved with a name. Saved routes are kept in this
@@ -257,11 +257,11 @@ It is still in testing on NEMAC's computer and not yet online.
   click. When the service is busy that can rise to about 6 seconds.
 - The first click after a quiet spell takes about 3 seconds while the county
   loads. It may take longer on real AWS.
-- A few routes labelled truck safe make a tight loop of 130 to 200 ft of road
-  to turn round, which may be too tight for a semi.
+- A few routes labeled truck safe make a tight loop of 130 to 200 ft of road
+  to turn around, which may be too tight for a semi.
 - Some truck routes rejoin the road 8 to 16 miles past the closure. That
   follows the truck rules but looks odd.
-- A car route that starts by turning round can be labelled "Possibly truck
+- A car route that starts by turning around can be labeled "Possibly truck
   safe". "Not truck safe" may be clearer.
 - About 3% of clicks in Haywood get "Possibly truck safe" because of a gap in
   a median.
@@ -279,7 +279,7 @@ It is still in testing on NEMAC's computer and not yet online.
 
 - 37.8% of roads score zero on purpose because they are dead ends. Closing
   one only affects the homes on it.
-- A detour of "none found within 3.1 miles" means no way round was found
+- A detour of "none found within 3.1 miles" means no way around was found
   nearby. It is not a measured distance.
 - Divided highways score low, correctly. Closing one side still leaves the
   other side open.

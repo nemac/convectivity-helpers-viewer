@@ -443,7 +443,7 @@ export interface SharedRoutes extends RouteResult {
   road: { overture_id: string; lon: number; lat: number; name: string | null };
 }
 
-// The three route colours on the map and beside each route in the popup:
+// The three route colors on the map and beside each route in the popup:
 // sky blue, green and violet, none of them orange or red, each light enough
 // to read on the dark gray basemap and drawn over a white casing so they read
 // on the light one. The number on each marker is in the matching dark ink.

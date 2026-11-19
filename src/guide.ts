@@ -142,7 +142,7 @@ function roughly(seconds: number): string {
   return `about ${round3(seconds / 3600)} hours`;
 }
 
-// The swatch colour for the example road, so the guide can show the colour it
+// The swatch color for the example road, so the guide can show the color it
 // is talking about.
 export function classColor(classField: string, props: Record<string, any> | null): string | null {
   const cls = Number(props?.[classField]);
@@ -156,7 +156,7 @@ function panelSteps(tab: TabId, hazard?: Hazard): GuideStep[] {
   const steps: GuideStep[] = [];
   if (tab === "isolation") {
     steps.push({ place: "panel", target: "shows", title: "What the map shows", lines: [
-      "The panel on the left holds the controls. This box at the top names what the colours "
+      "The panel on the left holds the controls. This box at the top names what the colors "
         + "on the map measure right now, and says what it means in a sentence or two.",
       "It changes when you move the slider under \"Choose a drive time\" below it.",
     ] });
@@ -181,7 +181,7 @@ function panelSteps(tab: TabId, hazard?: Hazard): GuideStep[] {
   } else if (tab === "detour") {
     steps.push({ place: "panel", target: "shows", title: "What the map shows", lines: [
       "The panel on the left holds the controls. This box at the top names the question "
-        + "the colours are answering right now, and says what it means in a sentence or two.",
+        + "the colors are answering right now, and says what it means in a sentence or two.",
       "It changes whenever you pick something else from \"Choose what the map shows\" below it.",
     ] });
     steps.push({ place: "panel", target: "county", title: "Pick a county", lines: [
@@ -189,30 +189,30 @@ function panelSteps(tab: TabId, hazard?: Hazard): GuideStep[] {
       "Pick one and the map moves there. Go ahead and try it. This guide will wait.",
     ] });
     steps.push({ place: "panel", target: "score", title: "Choose what the map shows", lines: [
-      "This list changes the question the colours on the map answer. There are four to "
+      "This list changes the question the colors on the map answer. There are four to "
         + "choose from.",
     ], items: DETOUR_SCORES.map((s) => ({ label: s.label, text: s.help })) });
     steps.push({ place: "panel", target: "services", title: "The places trips go to", lines: [
       "The icons on the map are the fire stations, medical facilities, schools, and grocery and "
         + "convenience stores the trips are counted to.",
-      "They are listed at the top of the legend on the map. Untick one to hide it, and tick it "
+      "They are listed at the top of the legend on the map. Uncheck one to hide it, and check it "
         + "again to bring it back. All four start shown.",
     ] });
   } else {
     steps.push({ place: "panel", target: "shows", title: "What the map shows", lines: [
-      "The panel on the left holds the controls. This box at the top names what the colours "
+      "The panel on the left holds the controls. This box at the top names what the colors "
         + "on the map measure, and says what it means in a sentence or two.",
       "On this tab there is one measure, the pinch score, so there is nothing to choose here.",
     ] });
   }
-  steps.push({ place: "panel", target: "classes", title: "How roads are sorted into colours", lines: [
+  steps.push({ place: "panel", target: "classes", title: "How roads are sorted into colors", lines: [
     "Every road gets a rank from 1 to 10. These three choices change where the line falls "
       + "between one rank and the next. If you are not sure, leave it on Log base 10.",
   ], items: METHODS.map((m) => ({ label: m.label, text: m.short })) });
   steps.push({ place: "panel", target: "legend", title: "Hide the lower ranks", lines: [
     "The legend sits on the map, under the Basemap button. Click \"Legend\" to fold it away "
       + "and again to bring it back.",
-    "The colour key shows which colour goes with each rank, with 10 at the top.",
+    "The color key shows which color goes with each rank, with 10 at the top.",
     "Slide the handle beside it up to hide the lower ranks. Only the most important "
       + "roads stay on the map.",
     ...(tab === "isolation"
@@ -222,7 +222,7 @@ function panelSteps(tab: TabId, hazard?: Hazard): GuideStep[] {
           + `and "${upperFirst(HAZARD_WORDS[hazard?.kind ?? "flood"].inside)}" show the buildings this `
           + "hazard cuts off and the ones inside it, and start on. \"All buildings\" shows every "
           + "building on Overture's map, for a sense of who lives and works along a road, and starts off."]
-      : ["Tick \"All buildings\" under the colour key to show every building from Overture's map, "
+      : ["Check \"All buildings\" under the color key to show every building from Overture's map, "
           + "for a sense of who lives and works along a road."]),
   ] });
   steps.push({ place: "panel", target: "methodology", title: "Want the details?", lines: [
@@ -255,7 +255,7 @@ function panelSteps(tab: TabId, hazard?: Hazard): GuideStep[] {
 }
 
 // The road steps on the functional isolation tab: what the map is for, the
-// hazard itself, the colours, and this road's numbers, each read from the
+// hazard itself, the colors, and this road's numbers, each read from the
 // road's tile properties when it has them.
 function isolationSteps(hazard: Hazard | undefined, props: Record<string, any> | null,
                         classField: string, name: string, startHere: string): GuideStep[] {
@@ -289,7 +289,7 @@ function isolationSteps(hazard: Hazard | undefined, props: Record<string, any> |
     hazardLines.push(...hazard.about.slice(1));
   }
 
-  const colourLines = [
+  const colorLines = [
     cls === CUT_OFF_CLASS
       ? `This road is drawn ${drawnAs(cls)}, because it is `
         + (props && (props.is_blocked === true || props.is_blocked === 1)
@@ -300,14 +300,14 @@ function isolationSteps(hazard: Hazard | undefined, props: Record<string, any> |
             + "minute drive are out of reach." : ", and 10 is the biggest loss.")
         : "Every road is ranked from 1 to 10, and 10 is the biggest loss.",
     "Thick orange roads have lost the most of the places within a short drive. Thin blue "
-      + "roads have lost little or nothing. The colour key beside the map gives the share "
+      + "roads have lost little or nothing. The color key beside the map gives the share "
       + "each rank stands for.",
     `Dark red, the thickest line of all, marks the roads ${w.inside}, which are closed, and `
       + `any road beyond it cut off completely: with ${w.closed} closed, no road leads out from `
       + "it at any drive time.",
   ];
   if (hazard && hazard.isolatedRoads === 0) {
-    colourLines.push(`${upperFirst(w.event)} cuts off no road completely, so the only dark red on this `
+    colorLines.push(`${upperFirst(w.event)} cuts off no road completely, so the only dark red on this `
       + `map is the closed roads ${w.inside}.`);
   }
 
@@ -353,7 +353,7 @@ function isolationSteps(hazard: Hazard | undefined, props: Record<string, any> |
       startHere,
     ] },
     { place: "road", title: upperFirst(w.area), lines: hazardLines, showsHazard: true },
-    { place: "road", title: "What the colour and thickness mean", lines: colourLines },
+    { place: "road", title: "What the color and thickness mean", lines: colorLines },
     { place: "road", title: "What the numbers say", lines: numbers },
   ];
 }
@@ -409,7 +409,7 @@ export function guideSteps(ex: Example, props: Record<string, any> | null,
           + "from a crash, a flood or road work, would cause the most trouble.",
         startHere,
       ] },
-      { place: "road", title: "What the colour and thickness mean", lines: [
+      { place: "road", title: "What the color and thickness mean", lines: [
         hasClass
           ? `This road is drawn ${drawnAs(cls)}. It ranks ${cls} out of 10, and 10 is the worst road to lose.`
           : "Every road is ranked from 1 to 10, and 10 is the worst road to lose.",
@@ -448,7 +448,7 @@ export function guideSteps(ex: Example, props: Record<string, any> | null,
       startHere,
     ] },
     { place: "road", title: "Two things make a pinch point", lines: ingredients },
-    { place: "road", title: "What the colour and thickness mean", lines: [
+    { place: "road", title: "What the color and thickness mean", lines: [
       hasClass
         ? `This road is drawn ${drawnAs(cls)}. It ranks ${cls} out of 10, and 10 is the strongest pinch point.`
         : "Every road is ranked from 1 to 10, and 10 is the strongest pinch point.",

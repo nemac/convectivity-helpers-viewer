@@ -1,6 +1,6 @@
 # Pinch points & alternate routing: things to improve
 
-A new tool is in testing: click a road to see up to three ways round it if it
+A new tool is in testing: click a road to see up to three ways around it if it
 is closed, with directions, the extra time and distance, and whether a semi
 can use each route. It is still in testing on NEMAC's computer and not yet
 online. These are the things it could do better, and a few things worth
@@ -12,7 +12,7 @@ knowing about the map.
 - Click a road, then "Get alternate and truck-safe routes" in its popup.
   Hovering a route on the map lights its row in the popup, and hovering a row
   lights the route on the map.
-- When only 1 or 2 ways round are found, the popup says so in bold above the
+- When only 1 or 2 ways around are found, the popup says so in bold above the
   routes, with the reason under them.
 - The routes can be downloaded as a CSV file, one row per step.
 - A set of routes can be saved with a name. Saved routes are kept in this
@@ -42,11 +42,11 @@ knowing about the map.
   click. When the service is busy that can rise to about 6 seconds.
 - The first click after a quiet spell takes about 3 seconds while the county
   loads. It may take longer on real AWS.
-- A few routes labelled truck safe make a tight loop of 130 to 200 ft of road
-  to turn round, which may be too tight for a semi.
+- A few routes labeled truck safe make a tight loop of 130 to 200 ft of road
+  to turn around, which may be too tight for a semi.
 - Some truck routes rejoin the road 8 to 16 miles past the closure. That
   follows the truck rules but looks odd.
-- A car route that starts by turning round can be labelled "Possibly truck
+- A car route that starts by turning around can be labeled "Possibly truck
   safe". "Not truck safe" may be clearer.
 - About 3% of clicks in Haywood get "Possibly truck safe" because of a gap in
   a median.
@@ -64,7 +64,7 @@ knowing about the map.
 
 - 37.8% of roads score zero on purpose because they are dead ends. Closing
   one only affects the homes on it.
-- A detour of "none found within 3.1 miles" means no way round was found
+- A detour of "none found within 3.1 miles" means no way around was found
   nearby. It is not a measured distance.
 - Divided highways score low, correctly. Closing one side still leaves the
   other side open.

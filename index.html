@@ -6,7 +6,7 @@
     <title>Road network connectivity viewer</title>
     <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.5.0/dist/maplibre-gl.css" />
     <style>
-      /* Figtree, bundled from Google Fonts (OFL licence in fonts/OFL.txt) so it works offline */
+      /* Figtree, bundled from Google Fonts (OFL license in fonts/OFL.txt) so it works offline */
       @font-face { font-family: "Figtree"; font-style: normal; font-weight: 300 900; font-display: swap; src: url("./fonts/Figtree-Variable.ttf") format("truetype"); }
       @font-face { font-family: "Figtree"; font-style: italic; font-weight: 300 900; font-display: swap; src: url("./fonts/Figtree-Italic-Variable.ttf") format("truetype"); }
       html, body, #root { height: 100%; margin: 0; font-family: Figtree, Helvetica, Arial, sans-serif; }
@@ -21,7 +21,7 @@
       }
       .maplibregl-popup-close-button:hover { background: #eceef1; color: #10171f; }
       /* The guide popup on a first visit, in Night Sky (#003865 in src/brand.ts).
-         The tip is recoloured on whichever side MapLibre has anchored it. */
+         The tip is recolored on whichever side MapLibre has anchored it. */
       .guide-popup .maplibregl-popup-content {
         background: #003865; color: #fff; padding: 14px 16px 12px; border-radius: 12px;
         box-shadow: 0 12px 32px rgba(0, 20, 45, 0.38);
@@ -52,7 +52,7 @@
       .hazard-pop.maplibregl-popup-anchor-left .maplibregl-popup-tip { border-right-color: #fff; }
       .hazard-pop.maplibregl-popup-anchor-right .maplibregl-popup-tip { border-left-color: #fff; }
       /* The numbered markers on the alternate routes (src/ondemandApi.ts has the
-         colours). A white ring so they read on any basemap. */
+         colors). A white ring so they read on any basemap. */
       .route-marker {
         width: 24px; height: 24px; border-radius: 50%; border: 2.5px solid #fff; box-sizing: border-box;
         display: flex; align-items: center; justify-content: center;

@@ -18,7 +18,7 @@ popup show a switch with two choices:
   route click there counts against today's total.
 
 The choice is one setting for both tools, and this browser remembers it.
-When the copy on your computer is not running, "This computer" is greyed out
+When the copy on your computer is not running, "This computer" is grayed out
 and the work goes to AWS.
 
 Areas and routes you saved stay in your lists when you switch. An area drawn
@@ -70,7 +70,7 @@ AWS and never shows it.
 
 To stop everything, press Ctrl+C in that terminal.
 
-If Docker is not running, the map still opens, but "This computer" is greyed
+If Docker is not running, the map still opens, but "This computer" is grayed
 out and the tools send their work to AWS.
 
 ## Coming soon

@@ -37,7 +37,7 @@ const urlView = viewFromUrl();
 
 // Lines are thinner when zoomed out and heavier when zoomed in, around the
 // width the QML asks for. Without this a statewide view is a solid block of
-// colour and a street-level view is a set of threads.
+// color and a street-level view is a set of threads.
 const ZOOM_SCALE: [number, number][] = [
   [6, 0.55],
   [10, 1.0],
@@ -75,7 +75,7 @@ function colorExpression(classField: string, classes: { value: number; color: st
 const HIT_WIDTH = 16;
 
 // The hovered road is traced with a two-tone glow: a dark outer band and a
-// white inner one, with the coloured road still drawn on top. One colour alone
+// white inner one, with the colored road still drawn on top. One color alone
 // cannot do this job, because a white halo disappears on the light basemap and
 // a dark one disappears on the dark basemap. A pair always leaves one of the
 // two visible whichever background is behind it.
@@ -167,7 +167,7 @@ function hitLayer(at: Where, classField: string, minClass: number): any {
   };
 }
 
-// The coloured roads, plus on the functional isolation tab a white casing
+// The colored roads, plus on the functional isolation tab a white casing
 // under the roads cut off completely or closed, and the hazard drawn over
 // everything.
 //
@@ -199,7 +199,7 @@ function roadLayers(at: Where, classField: string, minClass: number, opacity: nu
       filter: ["==", classOf(classField), CUT_OFF_CLASS],
       layout: { "line-cap": "butt", "line-join": "round", visibility: "none" },
       paint: {
-        "line-color": HIGHLIGHT, "line-opacity": 1,   // colour set by the basemap; see glowColors
+        "line-color": HIGHLIGHT, "line-opacity": 1,   // color set by the basemap; see glowColors
         "line-width": ["interpolate", ["linear"], ["zoom"], 10, 24, 14, 50, 17, 84],
         "line-blur": 0,
       },
@@ -389,8 +389,8 @@ function markerData(h: Hazard | null | undefined): GeoJSON.FeatureCollection {
 const maskColor = (basemap: BasemapKey) =>
   basemap === "darkgray" ? "rgba(0, 0, 0, 0.42)" : "rgba(20, 30, 45, 0.24)";
 
-// The hazard glow's colours. They look see-through, but are solid colours
-// mixed with the basemap's usual ground colour: with real transparency, every
+// The hazard glow's colors. They look see-through, but are solid colors
+// mixed with the basemap's usual ground color: with real transparency, every
 // place two glowing shapes overlap (segments meeting, a building beside a
 // road) stacked up into a brighter patch, which the user found odd. Solid
 // shapes merge into one glow instead.
@@ -517,7 +517,7 @@ interface Props {
   onDraw?: (corners: [number, number][], cursor: [number, number] | null, lastPx: [number, number] | null) => void;
   onDrawFinish?: (corners: [number, number][]) => boolean;
   onDrawCancel?: () => void;
-  // An outline to keep on the map in the drawing colour, outside drawing:
+  // An outline to keep on the map in the drawing color, outside drawing:
   // the area just drawn, while it is named and run.
   drawShape?: [number, number][] | null;
   // Extra content for a clicked road's popup on the pinch tab: the
@@ -871,7 +871,7 @@ export default function MapView({
           // the shade outside the study area, over the basemap and under
           // everything drawn from the data
           { id: "mask-fill", type: "fill", source: "mask", paint: { "fill-color": maskColor(basemap) } },
-          // beneath the coloured road, so the road's own class colour still
+          // beneath the colored road, so the road's own class color still
           // shows through the middle of the glow
           ...HOVER_LAYERS,
           // Built into the style rather than set afterwards, for the same
@@ -889,7 +889,7 @@ export default function MapView({
             },
           },
           // The alternate routes, over the roads: a white casing and the
-          // route's own colour.
+          // route's own color.
           {
             id: "alt-routes-casing", type: "line", source: "alt-routes",
             layout: { "line-cap": "round", "line-join": "round" },
@@ -1715,7 +1715,7 @@ function describe(p: Record<string, any>, classField: string, score: Score,
         heading: "How much uses it",
         lines: [rank ? `${rank}.` : "Almost no journeys pass along it."],
       });
-      footnote = "A journey between buildings means one building travelling to "
+      footnote = "A journey between buildings means one building traveling to "
         + "another, counted on the quickest route. Every building is tied to "
         + "its nearest road, and a route joining two busy places counts for "
         + "more than one joining two empty ones. These are estimates from "
@@ -1785,7 +1785,7 @@ function describe(p: Record<string, any>, classField: string, score: Score,
     // no way to know that one "trip" is one starting point going to one
     // service, nor that the services are a fixed set of four.
     if (sections.length) {
-      footnote = "A trip means one starting point travelling to one service: "
+      footnote = "A trip means one starting point traveling to one service: "
         + "a fire station, medical facility, school, or grocery or convenience "
         + "store. Only trips whose quickest route runs along this road are "
         + "counted.";
