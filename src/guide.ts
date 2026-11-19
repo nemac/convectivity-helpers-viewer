@@ -246,7 +246,7 @@ function panelSteps(tab: TabId, hazard?: Hazard): GuideStep[] {
         ? ["The button with four arrows on the map zooms out to show the whole county."]
         : ["Zoom out to see how the pinch points line up across the state. The button with "
             + "four arrows on the map shows the whole state."]),
-    "The tabs at the top of the page switch between Functional isolation, Pinch points and "
+    "The tabs at the top of the page switch between Functional isolation, Pinch points & alternate routing and "
       + "Access to services.",
     "To see this guide again later, click \"Start the guide\" at the bottom of the map. After a "
       + "few seconds it shrinks to the question mark at the bottom left.",

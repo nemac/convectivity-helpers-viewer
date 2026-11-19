@@ -1,9 +1,19 @@
 import React, { useMemo, useRef, useState } from "react";
 import {
   Box, ButtonBase, Checkbox, Divider, Drawer, FormControl, Link, MenuItem, MenuList, Popover, Radio, RadioGroup,
-  FormControlLabel, Select, Slider, Stack, Tab, Tabs, Tooltip, Typography,
+  FormControlLabel, ListSubheader, Select, Slider, Stack, Tab, Tabs, Tooltip, Typography,
 } from "@mui/material";
-import MapView, { Focus } from "./MapView";
+import MapView, { Focus, PENDING_RUN, RunFiles } from "./MapView";
+import {
+  AreasCard, DrawCard, DrawHint, MapBar, NameDialog, RemoveButton, RoutesBox, RoutesCard, ShareButton,
+  ShareIconButton, ShareNote, areaLine, areaLink, useShareNote,
+} from "./OnDemand";
+import {
+  ApiError, DrawCheck, fiApi, FiLimits, RUN_CUTOFF, RunPosted, RunStatus, SavedArea, api, checkShape,
+  expiryWords, loadAreas, rememberCode, runHazard, saveAreas, unexpired,
+  ONDEMAND_LIVE, ROUTES_CHANGED, routesApi, ROUTE_ID, TARGET_SWITCHABLE, useApiTarget, SavedRoute, SharedRoutes, loadRoutes, newSavedRoute, saveRoutes,
+  shareLink, sharedRoute, unexpiredRoutes,
+} from "./ondemandApi";
 import LocalFireDepartmentIcon from "@mui/icons-material/LocalFireDepartment";
 import HealthAndSafetyIcon from "@mui/icons-material/HealthAndSafety";
 import SchoolIcon from "@mui/icons-material/School";
@@ -18,9 +28,9 @@ import Methodology from "./Methodology";
 import { BULLDOG_BLUE, NIGHT_SKY, ORG_LOGO_SCREEN, ORG_NAME, ORG_URL } from "./brand";
 import {
   BASEMAPS, BasemapKey, COUNTIES, CUT_OFF_CLASS, DEFAULT_BASEMAP, DEFAULT_COUNTY, DEFAULT_CUTOFF, DEFAULT_METHOD,
-  DEFAULT_TAB, DETOUR_SCORES, HAZARDS, HAZARD_WORDS, ISOLATION_SCORES, METHODOLOGY, METHODS,
+  DEFAULT_TAB, DETOUR_SCORES, HAZARDS, HAZARD_WORDS, IMPROVE_NOTES, ISOLATION_SCORES, METHODOLOGY, METHODS,
   MIN_RANKED, MethodId, NC_BOUNDS, NC_CENTER, NC_ZOOM, PINCH_SCORES, PINCH_TILES,
-  STYLES, Score, TILES_BASE, TabId, classField, defaultHazard, hazardView, hazardsIn,
+  STYLES, Score, TILES_BASE, TabId, classField, defaultHazard, hazardView, hazardsIn, Hazard,
   latestOvertureRelease, overtureBuildingsUrl, BUILDING_COLOR, BUILDING_OUTLINE, OVERTURE_BUILDINGS_URL,
   shareRange,
   SERVICE_INK, SERVICE_KINDS, ServiceKind, HAZARD_BUILDING_COLORS, HazardBuildingStatus,
@@ -51,7 +61,7 @@ const PILL_MS = 15000;
 // stays "detour", so old links still open it.
 const NAV_TABS: { value: TabId; label: string }[] = [
   { value: "isolation", label: "Functional isolation" },
-  { value: "pinch", label: "Pinch points" },
+  { value: "pinch", label: "Pinch points & alternate routing" },
   { value: "detour", label: "Access to services" },
 ];
 const LEFT = 540;
@@ -169,9 +179,144 @@ export default function App() {
     Math.min(MAX_LEFT, Math.max(MIN_LEFT, Number(fromUrl("left", String(LEFT))) || LEFT)));
   const [doc, setDoc] = useState<{ file: string; label: string } | null>(null);
   const [mapEmpty, setMapEmpty] = useState(false);
+  // The "No data here" notice can be closed (the user asked for an X). It
+  // comes back the next time the map goes from having data to having none.
+  const [emptyClosed, setEmptyClosed] = useState(false);
+  React.useEffect(() => { if (!mapEmpty) setEmptyClosed(false); }, [mapEmpty]);
+  const closeEmpty = (
+    <Box component="button" type="button" aria-label="Close" title="Close" onClick={() => setEmptyClosed(true)}
+      sx={{
+        position: "absolute", top: 6, right: 6, width: 30, height: 30, border: "none", borderRadius: "50%",
+        bgcolor: "transparent", color: "#57606a", cursor: "pointer", display: "flex",
+        alignItems: "center", justifyContent: "center", "&:hover": { bgcolor: "#eef1f5", color: NIGHT_SKY },
+      }}>
+      <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+        <path d="M2 2 L12 12 M12 2 L2 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      </svg>
+    </Box>
+  );
   // Bumped to move the map on demand. Picking the county you are already on
   // has to fly anyway, and that would not change the key by itself.
   const [flyNonce, setFlyNonce] = useState(0);
+
+  // ---- the drawing tool (Functional isolation) ----
+  // The areas drawn in this browser, until their results expire.
+  // Expired areas are dropped from storage too, not only from the list.
+  const [areas, setAreasState] = useState<SavedArea[]>(() => {
+    const all = loadAreas(), live = unexpired(all);
+    if (live.length !== all.length) saveAreas(live);
+    return live;
+  });
+  const setAreas = (f: (a: SavedArea[]) => SavedArea[]) =>
+    setAreasState((cur) => { const next = f(cur); saveAreas(next); return next; });
+  // The drawn area being shown, from the list or a link (run=<id> in the
+  // hash); its latest status from the server; and, once read, its results.
+  // A build without the tools (ONDEMAND_LIVE false) ignores run= in a link
+  // and opens the usual view, and so does a link to another tab.
+  const [runId, setRunId] = useState<string | null>(
+    () => (ONDEMAND_LIVE && tab === "isolation" ? urlState.get("run") : null));
+  const [runStatus, setRunStatus] = useState<RunStatus | null>(null);
+  const [runView, setRunView] = useState<{ id: string; hazard: Hazard; files: RunFiles } | null>(null);
+  const activeRun = useRef(runId);
+  activeRun.current = runId;
+  const tabNow = useRef(tab);
+  tabNow.current = tab;
+  // A drawn area that finished while another tab was open: the map moves to
+  // it when Functional isolation is opened again, not on the other tab.
+  const flyOnReturn = useRef<string | null>(null);
+  // Whether to move the map to a drawn area's results once they are read.
+  // Not for a link that already carries a map position.
+  const flyNext = useRef(!(urlState.get("run") && urlState.get("lon") && urlState.get("zoom")));
+
+  // ---- saved routes (Pinch points) ----
+  // The sets of alternate routes saved in this browser for 7 days. Expired
+  // ones are dropped from storage on load and on the once-a-minute tick.
+  const [savedRoutes, setSavedRoutesState] = useState<SavedRoute[]>(() => {
+    const all = loadRoutes(), live = unexpiredRoutes(all);
+    if (live.length !== all.length) saveRoutes(live);
+    return live;
+  });
+  // A set saved again under the same server id (one opened from a shared
+  // link that was already in the list) replaces the older entry.
+  // a set that just got its share id (shareIdFor) is reread from storage
+  React.useEffect(() => {
+    const reread = () => setSavedRoutesState(unexpiredRoutes(loadRoutes()));
+    window.addEventListener(ROUTES_CHANGED, reread);
+    return () => window.removeEventListener(ROUTES_CHANGED, reread);
+  }, []);
+  const addSavedRoute = (r: SavedRoute) => {
+    setSavedRoutesState((cur) => {
+      const next = [...unexpiredRoutes(cur).filter((x) => !(r.route_id && x.route_id === r.route_id)), r];
+      saveRoutes(next);
+      return next;
+    });
+    return r.id;
+  };
+  // the saved set whose routes are on the map now, marked in "Your routes"
+  const [shownRoute, setShownRoute] = useState<string | null>(null);
+  // The X beside a saved set takes it out of this browser at once. When that
+  // set is on the map, its popup (which watches `removedRoute`) closes and the
+  // map goes back to the tab's usual view.
+  const [removedRoute, setRemovedRoute] = useState<{ id: string; n: number } | null>(null);
+  const removeSavedRoute = (id: string) => {
+    setSavedRoutesState((cur) => { const next = cur.filter((r) => r.id !== id); saveRoutes(next); return next; });
+    setRemovedRoute((cur) => ({ id, n: (cur?.n ?? 0) + 1 }));
+  };
+  // The saved set to open on the map; the key changes with each pick.
+  const [openRoutes, setOpenRoutes] = useState<{ key: string; saved: SavedRoute } | null>(null);
+  const pickSavedRoute = (id: string) => {
+    const r = savedRoutes.find((x) => x.id === id);
+    if (r) { setOpenRoutes({ key: `${id}:${Date.now()}`, saved: r }); setTouched(true); }
+  };
+  // a pick belongs to the pinch tab: coming back to it later opens nothing
+  React.useEffect(() => { if (tab !== "pinch") setOpenRoutes(null); }, [tab]);
+  // A shared link to a set of routes (route=<id> in the hash, Pinch points
+  // only): the server's stored copy is read, which uses no daily click, and
+  // opened like a saved set. One already in this browser's list opens as
+  // that entry. An expired or unknown link gets a notice and the usual view.
+  // Read once; the hash effect below then drops route= from the address.
+  React.useEffect(() => {
+    const id = ONDEMAND_LIVE && tab === "pinch" ? urlState.get("route") : null;
+    if (!id) return;
+    const gone = "These routes have expired or were never saved, so the map shows the usual view.";
+    if (!ROUTE_ID.test(id)) { setNotice({ text: gone }); return; }
+    let live = true;
+    api<SharedRoutes>(routesApi(), `/routes/saved/${id}`)
+      .then((s) => {
+        if (!live) return;
+        const mine = loadRoutes().find((r) => r.route_id === id && Date.parse(r.expires_at) > Date.now());
+        setOpenRoutes({ key: `link:${id}`, saved: mine ?? sharedRoute(s) });
+        setTouched(true);
+      })
+      .catch((e) => {
+        if (!live) return;
+        setNotice({ text: e instanceof ApiError && e.status === 404 ? gone
+          : `The shared routes could not be shown. ${e instanceof ApiError ? e.message : ""}`.trim() });
+      });
+    return () => { live = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const [drawing, setDrawing] = useState(false);
+  const [drawCheck, setDrawCheck] = useState<DrawCheck | null>(null);
+  const [corners, setCorners] = useState(0);
+  // the last corner's place on the map, in pixels: Finish and Cancel sit by it
+  const [lastCornerPx, setLastCornerPx] = useState<[number, number] | null>(null);
+  const [refusal, setRefusal] = useState<string | null>(null);
+  const cornersRef = useRef<[number, number][]>([]);
+  const [drawn, setDrawn] = useState<[number, number][] | null>(null);
+  const [naming, setNaming] = useState(false);
+  const [limits, setLimits] = useState<FiLimits | null>(null);
+  const [limitsFailed, setLimitsFailed] = useState(false);
+  // Where the two tools send their work: AWS, or on the dev server at
+  // localhost the copy on this computer if picked (TargetSwitch). Switching
+  // reads the counts again; saved areas and routes are left as they are.
+  const { target: apiTarget } = useApiTarget();
+  const targetNow = useRef(apiTarget);
+  targetNow.current = apiTarget;
+  const openSetup = import.meta.env.DEV
+    ? () => setDoc({ file: "local-setup.md", label: "Running the tools on this computer" }) : undefined;
+  const [notice, setNotice] = useState<{ text: string; action?: { label: string; run: () => void } } | null>(null);
+  const [now, setNow] = useState(() => Date.now());
 
   // The guide on screen, if any: which road, which step, and that road's
   // numbers once the map has read them from the tiles. It sits in a dark popup
@@ -226,16 +371,22 @@ export default function App() {
     if (ex.tab === "detour") setDetourScore(DETOUR_SCORES[0].base);
     if (ex.hazard) { setHazardId(ex.hazard); setCutoff(DEFAULT_CUTOFF); }
     setMinClass(1);
+    setRunId(null);           // the guide ignores drawn areas
+    setDrawing(false);
     setGuideProps(null);
     setGuide({ ex, step: 0, nudged: false });
     setFocus((f) => focusFor(ex, f ? Number(f.key.split(":")[1]) + 1 : 1));
   };
 
+  // A drawn area is worked out for a 10 minute drive only. The slider's own
+  // setting is kept for when a published hazard is picked again.
+  const runOn = tab === "isolation" && runId != null;
+  const cut = runOn ? RUN_CUTOFF : cutoff;
   const score: Score = useMemo(
     () => (tab === "pinch" ? PINCH_SCORES[0]
-      : tab === "isolation" ? ISOLATION_SCORES.find((s) => s.minutes === cutoff)!
+      : tab === "isolation" ? ISOLATION_SCORES.find((s) => s.minutes === cut)!
       : DETOUR_SCORES.find((s) => s.base === detourScore)!),
-    [tab, detourScore, cutoff]);
+    [tab, detourScore, cut]);
 
   const field = classField(score.base, method);
   const classes = STYLES[field]?.classes ?? [];
@@ -244,11 +395,14 @@ export default function App() {
   const ranks = classes.filter((c) => c.value !== CUT_OFF_CLASS);
   const cutOffStyle = classes.find((c) => c.value === CUT_OFF_CLASS);
   const countyObj = COUNTIES.find((c) => c.id === county)!;
-  const hazard = HAZARDS.find((h) => h.id === hazardId) ?? null;
+  const pubHazard = HAZARDS.find((h) => h.id === hazardId) ?? null;
+  // The drawn area's results once read, shaped like a published hazard.
+  const runReady = runOn && runView?.id === runId ? runView : null;
+  const hazard = runReady ? runReady.hazard : pubHazard;
   // The drive times this hazard's run has. A run made before 30 minutes was
   // added has only 5, 10 and 15, and the slider offers only those; a link or
   // a switch landing on a drive time the run lacks falls back to 15.
-  const cutoffsHere = ISOLATION_SCORES.filter((x) => hazard?.losing?.[String(x.minutes)] != null);
+  const cutoffsHere = ISOLATION_SCORES.filter((x) => pubHazard?.losing?.[String(x.minutes)] != null);
   const slidable = cutoffsHere.length ? cutoffsHere : ISOLATION_SCORES;
   React.useEffect(() => {
     if (tab === "isolation" && !slidable.some((x) => x.minutes === cutoff)) setCutoff(DEFAULT_CUTOFF);
@@ -257,10 +411,11 @@ export default function App() {
   // Too few roads losing anything at this drive time for ten ranks to mean
   // anything (the I-40 landslide within 5 minutes).
   const unranked = tab === "isolation" && hazard
-    ? (hazard.losing[String(cutoff)] ?? 0) < MIN_RANKED : false;
+    ? (hazard.losing[String(cut)] ?? 0) < MIN_RANKED : false;
   // What each rank stands for on this hazard, drive time and classification:
   // the lowest and highest share of places out of reach among its roads.
-  const rankRanges = tab === "isolation" && hazard ? hazard.classRanges?.[`${cutoff}_${method}`] ?? null : null;
+  const rankRanges = tab === "isolation" && hazard && !(runOn && !runReady)
+    ? hazard.classRanges?.[`${cut}_${method}`] ?? null : null;
   const steps = guide ? guideSteps(guide.ex, guideProps, field) : [];
   const step = guide ? steps[Math.min(guide.step, steps.length - 1)] : null;
   // The guide's first steps sit in the popup on the road; the rest point at
@@ -303,15 +458,228 @@ export default function App() {
   // county shown.
   const goToCounty = (id: string) => {
     panelChanged();
+    setRunId(null);
     setCounty(id);
     if (id !== county) setHazardId(defaultHazard(id));
     setFlyNonce((n) => n + 1);
   };
   const goToHazard = (id: string) => {
     panelChanged();
+    setRunId(null);
     setHazardId(id);
     setFlyNonce((n) => n + 1);
   };
+
+  // ---- the drawing tool ----
+
+  // The runs left today, read when the tab opens and after each run.
+  React.useEffect(() => { setLimits(null); setLimitsFailed(false); }, [apiTarget]);
+  React.useEffect(() => {
+    if (tab !== "isolation" || !ONDEMAND_LIVE) return;
+    let live = true;
+    api<FiLimits>(fiApi(), "/limits")
+      .then((l) => { if (live) { setLimits(l); setLimitsFailed(false); } })
+      .catch(() => { if (live) setLimitsFailed(true); });
+    return () => { live = false; };
+  }, [tab, apiTarget]);
+
+  // Once a minute: the countdowns move on, and expired areas leave the list.
+  React.useEffect(() => {
+    const t = window.setInterval(() => {
+      setNow(Date.now());
+      setAreasState((cur) => {
+        const next = unexpired(cur);
+        if (next.length === cur.length) return cur;
+        saveAreas(next);
+        return next;
+      });
+      setSavedRoutesState((cur) => {
+        const next = unexpiredRoutes(cur);
+        if (next.length === cur.length) return cur;
+        saveRoutes(next);
+        return next;
+      });
+    }, 60_000);
+    return () => window.clearInterval(t);
+  }, []);
+
+  // Read a finished run's area and study area, and show its results.
+  const loadResults = async (st: RunStatus) => {
+    if (!st.files || !st.stats) return;
+    try {
+      const [hz, study] = await Promise.all([st.files.hazard, st.files.study_area].map(async (u) => {
+        const r = await fetch(u);
+        if (!r.ok) throw new Error(String(r.status));
+        return (await r.json()) as GeoJSON.FeatureCollection;
+      }));
+      if (activeRun.current !== st.run_id) return;
+      setRunView({
+        id: st.run_id, hazard: runHazard(st, hz, study),
+        files: { roads: st.files.roads, hazard: hz, buildings: st.files.hazard_buildings },
+      });
+      setDrawn(null);
+      if (flyNext.current) {
+        if (tabNow.current === "isolation") setFlyNonce((n) => n + 1);
+        else flyOnReturn.current = st.run_id;
+      }
+      flyNext.current = true;
+    } catch {
+      if (activeRun.current === st.run_id) {
+        setNotice({ text: "The results for this area could not be read. Try picking it again." });
+      }
+    }
+  };
+
+  // What the server says about a run: the list is updated, and the area being
+  // shown follows it. A run that finishes while another is on screen gets a
+  // notice with a button to show it.
+  const onRunStatus = (st: RunStatus, fromPoll: boolean) => {
+    setAreas((list) => list.map((a) => (a.run_id === st.run_id ? { ...a, status: st.status } : a)));
+    if (st.run_id === activeRun.current) {
+      setRunStatus(st);
+      if (st.status === "done") loadResults(st);
+    } else if (fromPoll && st.status === "done") {
+      setNotice({ text: `Your area "${st.name}" is ready.`, action: { label: "Show it", run: () => pickRun(st.run_id) } });
+    }
+  };
+  const onRunGone = (id: string) => {
+    // With the dev server's toggle, an area not made on the target in use is
+    // not found there; it stays in the list for when the toggle goes back.
+    setAreas((list) => list.filter((a) => a.run_id !== id
+      || (TARGET_SWITCHABLE && a.target !== targetNow.current)));
+    if (id === activeRun.current) {
+      setRunId(null);
+      setNotice({ text: "This area has expired or was never saved, so the map is back on a published hazard." });
+    }
+  };
+  // The X beside one of the reader's own areas (in "Your areas" or the hazard
+  // list) takes it out of this browser's list at once. One on the map is
+  // cleared, and the map goes back to the published hazard picked. The
+  // published hazards themselves have no X and are never removed.
+  const removeArea = (id: string) => {
+    setAreas((list) => list.filter((a) => a.run_id !== id));
+    setNotice(null);
+    setHazardMenu(false);
+    if (id === activeRun.current) {
+      setRunId(null);
+      setFlyNonce((n) => n + 1);
+    }
+  };
+  // The hazard list's menu, held here so removing the area shown in it can
+  // close it (the entry picked is gone, so the menu has nothing to point at).
+  const [hazardMenu, setHazardMenu] = useState(false);
+  // "Link copied" (or the link to copy by hand) under the hazard pulldown,
+  // after its share icon beside one of the reader's areas
+  const hazardShare = useShareNote();
+
+  // The area being shown: read its status, and its results when done.
+  React.useEffect(() => {
+    if (!runId) { setRunStatus(null); setRunView(null); return; }
+    let live = true;
+    setRunStatus(null);
+    api<RunStatus>(fiApi(), `/runs/${runId}`)
+      .then((st) => { if (live) onRunStatus(st, false); })
+      .catch((e) => {
+        if (!live) return;
+        if (e instanceof ApiError && e.status === 404) onRunGone(runId);
+        else setNotice({ text: e instanceof ApiError ? e.message : "The drawing tool could not be reached." });
+      });
+    return () => { live = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runId]);
+
+  // Ask after every run still going every 3 seconds, backing off when the
+  // server cannot be reached. A reload picks this up again from the list.
+  const pollIds = Array.from(new Set([
+    ...areas.filter((a) => a.status === "running" && (!TARGET_SWITCHABLE || a.target === apiTarget))
+      .map((a) => a.run_id),
+    ...(runStatus?.status === "running" ? [runStatus.run_id] : []),
+  ])).join(",");
+  React.useEffect(() => {
+    if (!pollIds) return;
+    let live = true;
+    let fails = 0;
+    let timer: number | undefined;
+    const tick = async () => {
+      let failed = false;
+      for (const id of pollIds.split(",")) {
+        try {
+          const st = await api<RunStatus>(fiApi(), `/runs/${id}`);
+          if (!live) return;
+          if (st.status !== "running") onRunStatus(st, true);
+          else if (id === activeRun.current) setRunStatus(st);
+        } catch (e) {
+          if (!live) return;
+          if (e instanceof ApiError && e.status === 404) onRunGone(id);
+          else failed = true;
+        }
+      }
+      fails = failed ? fails + 1 : 0;
+      if (live) timer = window.setTimeout(tick, Math.min(30_000, 3000 * 2 ** fails));
+    };
+    timer = window.setTimeout(tick, 3000);
+    return () => { live = false; window.clearTimeout(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pollIds, apiTarget]);
+
+  const pickRun = (id: string) => {
+    panelChanged();
+    setTab("isolation");
+    setDrawing(false);
+    setNotice(null);
+    flyNext.current = true;
+    if (id === runId && runView?.id === id) setFlyNonce((n) => n + 1);
+    setRunId(id);
+  };
+
+  const startDrawing = () => {
+    endGuide();
+    setNotice(null);
+    setDrawCheck(null);
+    setCorners(0);
+    setRefusal(null);
+    cornersRef.current = [];
+    setDrawing(true);
+  };
+  const stopDrawing = () => { setDrawing(false); setDrawn(null); };
+  const onDraw = (pts: [number, number][], cursor: [number, number] | null, lastPx: [number, number] | null) => {
+    if (pts.length !== cornersRef.current.length) setRefusal(null);
+    cornersRef.current = pts;
+    setCorners(pts.length);
+    setLastCornerPx((p) => (p && lastPx && p[0] === lastPx[0] && p[1] === lastPx[1]) || (!p && !lastPx) ? p : lastPx);
+    setDrawCheck(checkShape(cursor ? [...pts, cursor] : pts));
+  };
+  const finishDrawing = (pts: [number, number][]) => {
+    const c = checkShape(pts);
+    if (c.problem) { setRefusal(c.problem); return false; }
+    setDrawing(false);
+    setDrawn(pts);
+    setNaming(true);
+    return true;
+  };
+  const submitRun = async (name: string, code: string) => {
+    const ring = drawn ?? [];
+    const sentTo = targetNow.current;
+    const res = await api<RunPosted>(fiApi(), "/runs", {
+      code, name, geometry: { type: "Polygon", coordinates: [[...ring, ring[0]]] },
+    });
+    rememberCode(code);
+    setLimits((l) => (l ? { ...l, runs_left: res.runs_left, big_left: res.big_left } : l));
+    setAreas((list) => [...list.filter((a) => a.run_id !== res.run_id), {
+      run_id: res.run_id, name: res.name, created_at: res.created_at, expires_at: res.expires_at,
+      county: res.county, status: "running", geometry: ring,
+      ...(TARGET_SWITCHABLE ? { target: sentTo } : {}),
+    }]);
+    setNaming(false);
+    flyNext.current = true;
+    setRunId(res.run_id);
+  };
+  // The outline in the drawing colour: the area just drawn, while it is
+  // named and run.
+  const runArea = areas.find((a) => a.run_id === runId);
+  const keepShape = naming ? drawn
+    : runOn && !runReady ? (runArea?.geometry ?? drawn) : null;
+  const runName = runReady?.hazard.label ?? runStatus?.name ?? runArea?.name ?? "loading";
 
   // Where the guide's card sits on the map during the panel steps: level with
   // the card it is pointing at, kept inside the map, with its arrow on that
@@ -366,10 +734,23 @@ export default function App() {
     };
   }, [onPanelStep, panelTarget]);
 
+  React.useEffect(() => {
+    if (tab !== "isolation" || !flyOnReturn.current) return;
+    if (flyOnReturn.current === runId && runView?.id === runId) setFlyNonce((n) => n + 1);
+    flyOnReturn.current = null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
+
   const onHazard = tab === "isolation" && hazard != null;
+  // A drawn area on its way: the published hazard's roads, area, shade and
+  // ranks are left off the map and the legend until the area's own results
+  // are read, so nothing on screen describes the wrong place.
+  const runPending = runOn && !runReady;
   // The stats strip under the map: functional isolation, no guide open.
-  const showStats = onHazard && !guide;
-  const tilesUrl = new URL(
+  // Not while a drawn area is still on its way: the map still shows the
+  // published hazard then, and its numbers would read as the drawn area's.
+  const showStats = onHazard && !guide && !(runOn && !runReady);
+  const tilesUrl = runReady ? `run:${runReady.id}` : runPending ? "run:pending" : new URL(
     tab === "pinch" ? PINCH_TILES : onHazard ? hazard.tiles : countyObj.tiles, TILES_BASE).href;
   const sourceLayer = tab === "pinch" ? "pinch" : tab === "isolation" ? "roads" : "detour";
   const view = onHazard ? hazardView(hazard) : null;
@@ -377,7 +758,7 @@ export default function App() {
   const zoom = tab === "pinch" ? NC_ZOOM : view ? view.zoom : countyObj.zoom;
   const fullBounds = tab === "pinch" ? NC_BOUNDS : onHazard ? hazard.bounds : countyObj.bounds;
   const fullLabel = tab === "pinch" ? "Show the whole state"
-    : onHazard ? `Show everything within ${hazard.bufferMiles} miles of the hazard`
+    : onHazard ? `Show everything within ${hazard.bufferMiles} miles of ${runReady ? "your area" : "the hazard"}`
     : `Show all of ${countyObj.label} County`;
 
   // keep the hash in step with the panel
@@ -388,8 +769,11 @@ export default function App() {
       buildings: buildings ? "1" : "0", svc: services.join(","), hb: hazardBldgs.join(","),
       min: String(minClass), left: String(left),
     }).forEach(([k, v]) => p.set(k, v));
+    if (runId && tab === "isolation") p.set("run", runId); else p.delete("run");
+    // a shared routes link is read once at load (see above), not kept
+    p.delete("route");
     window.history.replaceState(null, "", `#${p.toString()}`);
-  }, [tab, county, hazardId, cutoff, method, detourScore, basemap, buildings, services, hazardBldgs, minClass, left]);
+  }, [tab, county, hazardId, cutoff, method, detourScore, basemap, buildings, services, hazardBldgs, minClass, left, runId]);
 
   // drag the panel's right edge to resize it
   const startDrag = (e: React.MouseEvent) => {
@@ -430,14 +814,14 @@ export default function App() {
       )}
         <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
           {tab === "isolation"
-            ? `Each rank, with the share of the places within a ${cutoff} minute drive that someone on those roads can no longer get to:`
+            ? `Each rank, with the share of the places within a ${cut} minute drive that someone on those roads can no longer get to:`
             : `${score.label}, ${METHODS.find((m) => m.id === method)?.label.toLowerCase()} breaks.`}
         </Typography>
         {unranked && hazard && (
           <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
-            Only {hazard.losing[String(cutoff)]}{" "}
-            {hazard.losing[String(cutoff)] === 1 ? "road loses" : "roads lose"} anything
-            within {cutoff} minutes, too few to rank, so the other roads are all in rank 1.
+            Only {hazard.losing[String(cut)]}{" "}
+            {hazard.losing[String(cut)] === 1 ? "road loses" : "roads lose"} anything
+            within {cut} minutes, too few to rank, so the other roads are all in rank 1.
           </Typography>
         )}
         {/* High class at the top, as a map legend reads. On the functional
@@ -567,7 +951,7 @@ export default function App() {
             in NAV_TABS. */}
         <Tabs
           value={tab}
-          onChange={(_, v) => { endGuide(); setTab(v); }}
+          onChange={(_, v) => { endGuide(); setDrawing(false); setTab(v); }}
           sx={{
             ml: 1.5, minHeight: 0, flexShrink: 0,
             "& .MuiTabs-flexContainer": { gap: 1.5 },
@@ -654,7 +1038,7 @@ export default function App() {
             {tab === "isolation" ? (
               <Typography variant="body2" sx={{ mt: 0.5, lineHeight: 1.5 }}>
                 For someone on a road near the hazard: of the homes, shops, schools and other
-                buildings they could drive to within {cutoff} minutes,{" "}
+                buildings they could drive to within {cut} minutes,{" "}
                 <b>the share they can no longer get to</b> once the hazard closes the roads it covers.
               </Typography>
             ) : (
@@ -676,17 +1060,87 @@ export default function App() {
 
           {tab === "isolation" && (
             <Card title="Choose a hazard" guide="hazard" lit={panelTarget === "hazard"}>
-              <Select fullWidth size="small" value={hazardId} sx={PICKER_SX}
-                onChange={(e) => goToHazard(e.target.value)}>
-                {hazardsIn(county).map((h) => <MenuItem key={h.id} value={h.id}>{h.label}</MenuItem>)}
+              {/* A drawn area on show is the selected entry, "Your area: ...";
+                  picking a published hazard goes back to it. Only the
+                  reader's own area (one in this browser's list) has the
+                  remove X; the published hazards never do. The closed field
+                  shows the name alone, without the X. */}
+              <Select fullWidth size="small" value={runOn ? "__run" : hazardId} sx={PICKER_SX}
+                open={hazardMenu} onOpen={() => setHazardMenu(true)} onClose={() => setHazardMenu(false)}
+                onChange={(e) => {
+                  const v = String(e.target.value);
+                  if (v === "__run") return;
+                  if (v.startsWith("run:")) { setHazardMenu(false); pickRun(v.slice(4)); return; }
+                  goToHazard(v);
+                }}
+                renderValue={(v) => (v === "__run" ? `Your area: ${runName}`
+                  : hazardsIn(county).find((h) => h.id === v)?.label ?? v)}>
+                {/* Every area drawn in this browser, not only the one on
+                    show, each with its expiry date and an X (the user found
+                    them "lost" when only the shown one was listed). */}
+                {runOn && !runArea && (
+                  <MenuItem value="__run">Your area: {runName}</MenuItem>
+                )}
+                {areas.length > 0 && <ListSubheader sx={{ lineHeight: "32px" }}>Your areas</ListSubheader>}
+                {[...areas].sort((x, y) => Date.parse(y.created_at) - Date.parse(x.created_at)).map((a) => {
+                  // the same row as in "Your areas" and "Your routes": a
+                  // check and a bold name on the one on the map, the name,
+                  // its expiry or "Running...", the share icon and the X
+                  const link = areaLink(a);
+                  const shown = runOn && a.run_id === runId;
+                  return (
+                    <MenuItem key={a.run_id} value={a.run_id === runId ? "__run" : `run:${a.run_id}`} sx={{ gap: 0.75, py: 0.5 }}
+                      aria-current={shown ? "true" : undefined}>
+                      <Box sx={{ width: 18, flexShrink: 0, display: "flex" }} title={shown ? "On the map now" : undefined}>
+                        {shown && <CheckIcon sx={{ fontSize: 18, color: BULLDOG_BLUE }} aria-label="On the map now" />}
+                      </Box>
+                      <Box sx={{ flex: 1, minWidth: 0 }}>
+                        <Typography variant="body2" noWrap sx={{ fontWeight: shown ? 700 : 400 }}>{a.name}</Typography>
+                        <Typography variant="caption" color="text.secondary" noWrap sx={{ display: "block" }}>
+                          {areaLine(a, Math.max(now, Date.now()))}
+                        </Typography>
+                      </Box>
+                      {link && (
+                        <ShareIconButton name={a.name}
+                          onShare={() => { setHazardMenu(false); hazardShare.share(a.name, link()); }} />
+                      )}
+                      <RemoveButton name={a.name} onRemove={() => removeArea(a.run_id)} />
+                    </MenuItem>
+                  );
+                })}
+                {areas.length > 0 && <ListSubheader sx={{ lineHeight: "32px" }}>Published hazards</ListSubheader>}
+                {/* The published hazards get the same share icon (no X: they
+                    are never removed). The link opens that hazard with the
+                    drive time and grouping on show. */}
+                {hazardsIn(county).map((h) => (
+                  <MenuItem key={h.id} value={h.id} sx={{ gap: 0.75 }}>
+                    <Box component="span" sx={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>
+                      {h.label}
+                    </Box>
+                    <ShareIconButton name={h.label}
+                      onShare={() => {
+                        setHazardMenu(false);
+                        hazardShare.share(h.label, shareLink(
+                          { tab: "isolation", county, hazard: h.id, cutoff: String(cutoff), method }, false));
+                      }} />
+                  </MenuItem>
+                ))}
               </Select>
+              <ShareNote note={hazardShare.note} onClose={hazardShare.clear} />
             </Card>
           )}
 
           {/* The drive time as a slider rather than a list, so moving between
               5, 10, 15 and 30 minutes shows the loss growing or shrinking. It
               stops only at the three times the runs measured. */}
-          {tab === "isolation" && (
+          {tab === "isolation" && runOn && (
+            <Card title="Drive time" guide="score" lit={panelTarget === "score"}>
+              <Typography variant="body2">
+                10 minutes. Drawn areas are worked out for a 10 minute drive only.
+              </Typography>
+            </Card>
+          )}
+          {tab === "isolation" && !runOn && (
             <Card title="Choose a drive time" guide="score" lit={panelTarget === "score"}>
               <Box sx={{ px: 1.5, pt: 0.5 }}>
                 {/* One even step per drive time, so 5, 10 and 15 do not
@@ -743,6 +1197,22 @@ export default function App() {
               button on the map, and the road opacity slider was removed at
               the user's request. */}
 
+          {/* The drawing tool and the areas drawn in this browser, just above
+              Methodology, as in the approved mockups. Left out of a
+              production build unless VITE_ONDEMAND_LIVE=1 (ONDEMAND_LIVE). */}
+          {tab === "isolation" && ONDEMAND_LIVE && (
+            <DrawCard drawing={drawing} limits={limits} limitsFailed={limitsFailed}
+              onStart={startDrawing} onCancel={stopDrawing} onSetup={openSetup} />
+          )}
+          {tab === "isolation" && ONDEMAND_LIVE && (
+            <AreasCard areas={areas} activeId={runOn ? runId : null} now={now} onPick={pickRun} onRemove={removeArea} />
+          )}
+          {/* The routes saved from road popups, just above Methodology. */}
+          {tab === "pinch" && ONDEMAND_LIVE && (
+            <RoutesCard routes={savedRoutes} shownId={shownRoute} now={now} onPick={pickSavedRoute}
+              onRemove={removeSavedRoute} />
+          )}
+
           {/* left off entirely on a tab whose note is not written yet */}
           {METHODOLOGY[tab].length > 0 && (
             <Card title="Methodology" guide="methodology" lit={panelTarget === "methodology"}>
@@ -760,11 +1230,27 @@ export default function App() {
             </Card>
           )}
 
+          {IMPROVE_NOTES[tab].length > 0 && (
+            <Card title="Things to improve">
+              <Stack spacing={0.75}>
+                {IMPROVE_NOTES[tab].map((d) => (
+                  <Link key={d.file} component="button" underline="hover" sx={{ textAlign: "left", color: BULLDOG_BLUE }}
+                    onClick={() => setDoc(d)}>
+                    <Typography variant="body2">{d.label}</Typography>
+                  </Link>
+                ))}
+              </Stack>
+              <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
+                What the tools in testing could do better, and what is worth knowing about the map.
+              </Typography>
+            </Card>
+          )}
+
           {/* Double-clicking this line is a hidden reset: see resetRemembered. */}
           <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 2 }}
             onDoubleClick={resetRemembered}>
             Symbology from {STYLES[field]?.source ?? "the QGIS styles"} in output/.
-            {onHazard
+            {onHazard && hazard.overtureRelease
               ? ` Roads and buildings: Overture Maps Foundation, release ${hazard.overtureRelease}.`
               : " Roads: Overture Maps Foundation."}
           </Typography>
@@ -794,7 +1280,7 @@ export default function App() {
             countyKey={county}
             fullBounds={fullBounds}
             fullLabel={fullLabel}
-            hazard={onHazard ? hazard : null}
+            hazard={onHazard && !runPending ? hazard : null}
             buildingsUrl={buildings && overtureRelease ? overtureBuildingsUrl(overtureRelease) : null}
             services={tab === "detour" ? services : null}
             hazardBuildings={hazardBldgs}
@@ -817,6 +1303,20 @@ export default function App() {
             ) : null}
             onGuideAway={onGuideAway}
             onGuideClosed={endGuide}
+            run={runReady?.files ?? (runPending ? PENDING_RUN : null)}
+            drawing={drawing}
+            onDraw={onDraw}
+            onDrawFinish={finishDrawing}
+            onDrawCancel={stopDrawing}
+            drawShape={keepShape}
+            routeBox={ONDEMAND_LIVE ? (ctx) => (
+              <RoutesBox key={ctx.key} ctx={ctx}
+                onSave={(name, road, result) => addSavedRoute(newSavedRoute(name, road,
+                  String(ctx.props.overture_id ?? ""), ctx.lngLat, ctx.props, result))}
+                removed={removedRoute} onGone={() => setFlyNonce((n) => n + 1)} onShowing={setShownRoute}
+                onSetup={openSetup} />
+            ) : undefined}
+            openRoutes={openRoutes}
           />
         </MapBoundary>
 
@@ -825,7 +1325,8 @@ export default function App() {
             so it never covers the hazard or the guide; open on the guide's
             steps about the legend and the services. */}
         <MapLegend
-          open={guide ? panelTarget === "legend" || panelTarget === "services" : legendOpen}
+          // folded while an area is drawn, so it never covers the drawing
+          open={guide ? panelTarget === "legend" || panelTarget === "services" : drawing ? false : legendOpen}
           lit={panelTarget === "legend" || panelTarget === "services"}
           onToggle={toggleLegend}>
           {legendBody}
@@ -854,6 +1355,41 @@ export default function App() {
           </Box>
         )}
 
+        {/* Drawing: the hint with Finish and Cancel, and the live size. */}
+        {drawing && (
+          <DrawHint check={refusal && drawCheck ? { ...drawCheck, problem: refusal } : drawCheck}
+            corners={Math.max(corners, refusal ? 3 : 0)}
+            canFinish={checkShape(cornersRef.current).problem == null}
+            onFinish={() => finishDrawing(cornersRef.current)} onCancel={stopDrawing}
+            anchor={corners > 0 ? lastCornerPx : null} />
+        )}
+        {/* A drawn area on its way: the server's own words on its progress. */}
+        {!drawing && runOn && runStatus?.status === "running" && (
+          <MapBar spinner>{runStatus.progress} Big cities take about 2 minutes.</MapBar>
+        )}
+        {!drawing && runOn && runStatus?.status === "done" && !runReady && (
+          <MapBar spinner>Loading the results for {runStatus.name}.</MapBar>
+        )}
+        {!drawing && runOn && runStatus?.status === "failed" && (
+          <MapBar onClose={() => setRunId(null)}>
+            "{runStatus.name}" could not be worked out. {runStatus.error ?? ""}
+          </MapBar>
+        )}
+        {!drawing && notice && !(runOn && runStatus && runStatus.status !== "done") && (
+          <MapBar onClose={() => setNotice(null)}>
+            {notice.text}
+            {notice.action && (
+              <Box component="button" type="button" onClick={() => { notice.action!.run(); setNotice(null); }} sx={{
+                ml: 1.25, font: "inherit", fontWeight: 700, fontSize: 13, cursor: "pointer", px: 1.25, py: 0.25,
+                borderRadius: 999, border: "1.5px solid #fff", color: "#fff", bgcolor: "transparent",
+                "&:hover": { bgcolor: "rgba(255,255,255,0.15)" },
+              }}>
+                {notice.action.label}
+              </Box>
+            )}
+          </MapBar>
+        )}
+
         {!guide && (
           <GuideLauncher shape={launcher} onStart={() => startExample(firstExample(tab, hazardId))} />
         )}
@@ -864,7 +1400,7 @@ export default function App() {
             the "Start the guide" pill while that is showing, and once the
             pill has become the circle in the corner, it is centred in the
             space to the circle's right so it never covers it. */}
-        {!guide && !touched && !(tab !== "pinch" && mapEmpty) && (
+        {!guide && !touched && !drawing && !(tab !== "pinch" && mapEmpty) && (
           <Box sx={{
             position: "absolute", bottom: launcher === "pill" ? 34 + LAUNCHER_SIZE + 12 : 34,
             left: launcher === "pill" ? "50%" : `calc(50% + ${(12 + LAUNCHER_SIZE) / 2}px)`,
@@ -886,21 +1422,24 @@ export default function App() {
             explanation, say so and offer the places that do have data. */}
         {/* The same on the functional isolation tab, where each hazard's run
             covers only the area around it. */}
-        {onHazard && mapEmpty && (
+        {onHazard && mapEmpty && !emptyClosed && !drawing && !runPending && (
           <Box sx={{
             position: "absolute", top: "50%", left: "50%", transform: "translate(-50%, -50%)",
-            bgcolor: "#fff", borderRadius: 2, px: 2.5, py: 2, maxWidth: 460,
+            bgcolor: "#fff", borderRadius: 2, px: 2.5, py: 2, pr: 5, maxWidth: 460,
             boxShadow: "0 6px 24px rgba(16,24,40,0.18)",
             border: "1px solid #dfe3e8", zIndex: 5,
           }}>
+            {closeEmpty}
             <Typography sx={{ fontWeight: 700, fontSize: 14.5, mb: 0.5 }}>
               No data for this hazard here
             </Typography>
             <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-              Each hazard covers the roads within {hazard.bufferMiles} miles of it. This one
-              is {hazard.label.charAt(0).toLowerCase() + hazard.label.slice(1)}.
+              {runReady
+                ? `Your area covers the roads within ${hazard.bufferMiles} miles of it. This one is "${hazard.label}".`
+                : `Each hazard covers the roads within ${hazard.bufferMiles} miles of it. This one `
+                  + `is ${hazard.label.charAt(0).toLowerCase() + hazard.label.slice(1)}.`}
             </Typography>
-            <Box component="button" onClick={() => goToHazard(hazard.id)}
+            <Box component="button" onClick={() => (runReady ? setFlyNonce((n) => n + 1) : goToHazard(hazard.id))}
               sx={{
                 font: "inherit", fontWeight: 600, fontSize: 13.5, cursor: "pointer",
                 px: 1.75, py: 0.75, borderRadius: 1.5, color: "#fff",
@@ -912,19 +1451,20 @@ export default function App() {
           </Box>
         )}
 
-        {tab === "detour" && mapEmpty && (
+        {tab === "detour" && mapEmpty && !emptyClosed && (
           <Box sx={{
             position: "absolute", top: "50%", left: "50%", transform: "translate(-50%, -50%)",
-            bgcolor: "#fff", borderRadius: 2, px: 2.5, py: 2, maxWidth: 460,
+            bgcolor: "#fff", borderRadius: 2, px: 2.5, py: 2, pr: 5, maxWidth: 460,
             boxShadow: "0 6px 24px rgba(16,24,40,0.18)",
             border: "1px solid #dfe3e8", zIndex: 5,
           }}>
+            {closeEmpty}
             <Typography sx={{ fontWeight: 700, fontSize: 14.5, mb: 0.5 }}>
               No access to services data here
             </Typography>
             <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
               Access to services has been worked out for three counties so far.
-              Pinch points cover the whole state, so that tab has data everywhere.
+              Pinch points & alternate routing covers the whole state, so that tab has data everywhere.
             </Typography>
             <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
               {COUNTIES.map((c) => (
@@ -957,15 +1497,28 @@ export default function App() {
             <Stat value={hazard.closedRoads} label="road segments closed" />
             <Stat value={`${feet(hazard.isolatedRoadM + hazard.closedRoadM)} ft`}
               label={`of road: ${feet(hazard.isolatedRoadM)} ft cut off, ${feet(hazard.closedRoadM)} ft closed`} />
+            {/* A drawn area's results: a link that opens them for anyone,
+                with no new run, until they expire. */}
+            {runReady && ONDEMAND_LIVE && (
+              <Box sx={{ ml: "auto", alignSelf: "center" }}>
+                <ShareButton label="Share this area"
+                  link={() => shareLink({ tab: "isolation", run: runReady.id }, true)} />
+              </Box>
+            )}
           </Stack>
           <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5, lineHeight: 1.3 }}>
-            Counted by the analysis for this hazard. Buildings and roads: Overture Maps Foundation,
-            release {hazard.overtureRelease}.
+            {runReady
+              ? "Counted by the analysis for your area, within 12 miles of it. Buildings and roads: Overture Maps Foundation"
+                + (hazard.overtureRelease ? `, release ${hazard.overtureRelease}.` : ".")
+              : `Counted by the analysis for this hazard. Buildings and roads: Overture Maps Foundation, `
+                + `release ${hazard.overtureRelease}.`}
           </Typography>
         </Box>
       )}
       </Box>
       </Box>
+
+      <NameDialog open={naming} onCancel={() => { setNaming(false); setDrawn(null); }} onSubmit={submitRun} />
 
       <Methodology file={doc?.file ?? null} title={doc?.label ?? ""} width={DOC_WIDTH}
         onClose={() => setDoc(null)} />

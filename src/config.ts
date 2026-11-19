@@ -152,7 +152,8 @@ export const COUNTIES: County[] = [
 
 // The words a hazard is described in, so a sentence can name it the way a
 // reader would: "with the flooded roads closed", "under the landslide".
-export type HazardKind = "flood" | "landslide" | "debris flow";
+// "drawn" is an area someone drew with the drawing tool.
+export type HazardKind = "flood" | "landslide" | "debris flow" | "drawn";
 export const HAZARD_WORDS: Record<HazardKind, {
   event: string;            // "before the flood"
   area: string;             // "1.2 miles from the flooded area"
@@ -171,10 +172,14 @@ export const HAZARD_WORDS: Record<HazardKind, {
     event: "the debris flow", area: "the debris flow",
     inside: "under the debris flow", closed: "the roads under the debris flow",
   },
+  drawn: {
+    event: "the drawn area closed", area: "the drawn area",
+    inside: "inside the drawn area", closed: "the roads in the drawn area",
+  },
 };
 
 // What scripts/make_hazards.py reads out of each run's GeoPackage.
-interface HazardRun {
+export interface HazardRun {
   county: string;
   hazard: string;
   tiles: string;
@@ -367,6 +372,15 @@ export const METHODOLOGY: Record<TabId, { file: string; label: string }[]> = {
   detour: [
     { file: "run-detour-technical.md", label: "Access to services analysis" },
   ],
+};
+
+// A separate, plain-language note per tab: things the tools in testing could
+// do better, and things worth knowing about the map. The same lists are in
+// the methodology notes. A tab with none shows no card.
+export const IMPROVE_NOTES: Record<TabId, { file: string; label: string }[]> = {
+  isolation: [{ file: "notes-functional-isolation.md", label: "Functional isolation: things to improve" }],
+  pinch: [{ file: "notes-pinch.md", label: "Pinch points & alternate routing: things to improve" }],
+  detour: [],
 };
 
 // The two grays come first: the road ramp holds its lightness between L*40

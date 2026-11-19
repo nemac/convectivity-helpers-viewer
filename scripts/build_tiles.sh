@@ -51,9 +51,11 @@ max_service_quantile_class,max_service_log10_class,max_service_geometric_class,\
 mean_service_quantile_class,mean_service_log10_class,mean_service_geometric_class,\
 class,road_name,travel_time_sec"
 
+# overture_id is what the alternate routes tool sends back to the server for
+# a clicked road, so the pinch tiles carry it.
 PINCH_COLS="pinch_score,pinch_norm,pinch_class,pinch_log10_class,\
 pinch_quantile_class,pinch_geometric_class,centrality_raw,centrality_norm,\
-centrality_log,detour_len_m,class,road_name"
+centrality_log,detour_len_m,class,road_name,overture_id"
 
 # Columns from every functional isolation hazard run. The cutoffs are the
 # ones run-functional-isolation-hazards.sh writes (5, 10, 15 and 30 minutes).

@@ -13,3 +13,8 @@ CLAUDE.md
 
 .DS_Store
 *.log
+
+# Access codes for the on-demand tools (see .env.development.local). Never
+# commit any .env file.
+.env
+.env.*

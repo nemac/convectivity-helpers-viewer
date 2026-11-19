@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "dev:local": "VITE_TILES_BASE=data/ vite",
+    "dev:local": "bash scripts/dev_local.sh",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "styles": "node scripts/qml_to_styles.mjs",

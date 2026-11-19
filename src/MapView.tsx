@@ -10,6 +10,7 @@ import {
   humanNumber, humanPercent, humanSeconds, milesInWords, percentileOf, rankSentence,
   roadTypeLabel, splitNames,
 } from "./config";
+import type { SavedRoute } from "./ondemandApi";
 
 // QGIS line widths are in millimetres on a printed page; the map works in
 // screen pixels. At 96 dpi one millimetre is about 3.78 px, which makes the
@@ -122,12 +123,44 @@ function classFilter(classField: string, minClass: number): any {
     : ["all"];
 }
 
-function hitLayer(sourceLayer: string, classField: string, minClass: number): any {
+// Where each of a run's layers comes from. A published run is one PMTiles file
+// with the layers roads (or pinch, or detour), hazard and hazard_buildings. A
+// drawn area's results are GeoJSON files, one source each.
+type Where = (layer: "roads" | "hazard" | "hazard_buildings") => any;
+const tilesAt = (roadsLayer: string): Where => (l) =>
+  ({ source: "roads", "source-layer": l === "roads" ? roadsLayer : l });
+const runAt: Where = (l) => ({ source: l === "roads" ? "roads" : l === "hazard" ? "run-hazard" : "run-bldg" });
+const isRunKey = (tilesUrl: string) => tilesUrl.startsWith("run:");
+
+// The data sources for the roads: a PMTiles file, or a drawn area's files.
+function roadSources(tilesUrl: string, run: RunFiles | null | undefined): Record<string, any> {
+  if (isRunKey(tilesUrl) && run) {
+    return {
+      roads: { type: "geojson", data: run.roads },
+      "run-hazard": { type: "geojson", data: run.hazard },
+      "run-bldg": { type: "geojson", data: run.buildings },
+    };
+  }
+  return { roads: { type: "vector", url: `pmtiles://${tilesUrl}` } };
+}
+const ROAD_SOURCE_IDS = ["roads", "run-hazard", "run-bldg"];
+
+// A drawn area's results: the roads and the buildings as URLs (MapLibre reads
+// them in its worker), the area itself already read.
+export interface RunFiles {
+  roads: string | GeoJSON.FeatureCollection;
+  hazard: GeoJSON.FeatureCollection;
+  buildings: string | GeoJSON.FeatureCollection;
+}
+// Nothing to draw: a drawn area still on its way (tilesUrl "run:pending").
+const NO_FEATURES: GeoJSON.FeatureCollection = { type: "FeatureCollection", features: [] };
+export const PENDING_RUN: RunFiles = { roads: NO_FEATURES, hazard: NO_FEATURES, buildings: NO_FEATURES };
+
+function hitLayer(at: Where, classField: string, minClass: number): any {
   return {
     id: "roads-hit",
     type: "line",
-    source: "roads",
-    "source-layer": sourceLayer,
+    ...at("roads"),
     filter: classFilter(classField, minClass),
     layout: { "line-cap": "round", "line-join": "round" },
     paint: { "line-color": "#000", "line-opacity": 0, "line-width": HIT_WIDTH },
@@ -149,7 +182,7 @@ function hitLayer(sourceLayer: string, classField: string, minClass: number): an
 // The hazard sits on top of the roads in charcoal hatching with a white rim:
 // nothing in the blue to orange ramp, and nothing near the red of class 11.
 // The hatching lets the closed roads inside it still show through.
-function roadLayers(sourceLayer: string, classField: string, minClass: number, opacity: number,
+function roadLayers(at: Where, classField: string, minClass: number, opacity: number,
                     hazard: boolean): any[] {
   const classes = STYLES[classField]?.classes ?? [];
   const layers: any[] = [];
@@ -162,7 +195,7 @@ function roadLayers(sourceLayer: string, classField: string, minClass: number, o
     // halo has none, and the ends are cut square (round ends overlap and
     // stack up where segments join).
     layers.push({
-      id: "hazard-hl-roads", type: "line", source: "roads", "source-layer": sourceLayer,
+      id: "hazard-hl-roads", type: "line", ...at("roads"),
       filter: ["==", classOf(classField), CUT_OFF_CLASS],
       layout: { "line-cap": "butt", "line-join": "round", visibility: "none" },
       paint: {
@@ -172,7 +205,7 @@ function roadLayers(sourceLayer: string, classField: string, minClass: number, o
       },
     });
     layers.push({
-      id: "hazard-hl-roads-core", type: "line", source: "roads", "source-layer": sourceLayer,
+      id: "hazard-hl-roads-core", type: "line", ...at("roads"),
       filter: ["==", classOf(classField), CUT_OFF_CLASS],
       layout: { "line-cap": "butt", "line-join": "round", visibility: "none" },
       paint: {
@@ -182,14 +215,14 @@ function roadLayers(sourceLayer: string, classField: string, minClass: number, o
       },
     });
     layers.push({
-      id: "roads-casing", type: "line", source: "roads", "source-layer": sourceLayer,
+      id: "roads-casing", type: "line", ...at("roads"),
       filter: ["==", classOf(classField), CUT_OFF_CLASS],
       layout: { "line-cap": "round", "line-join": "round" },
       paint: { "line-color": "#ffffff", "line-width": casingWidth(classes), "line-opacity": opacity },
     });
   }
   layers.push({
-    id: "roads-line", type: "line", source: "roads", "source-layer": sourceLayer,
+    id: "roads-line", type: "line", ...at("roads"),
     filter: classFilter(classField, minClass),
     layout: {
       "line-cap": "round",
@@ -210,20 +243,20 @@ function roadLayers(sourceLayer: string, classField: string, minClass: number, o
       // A light charcoal tint under the hatching, so the shape reads at a
       // glance as one area rather than as loose stripes.
       {
-        id: "hazard-tint", type: "fill", source: "roads", "source-layer": "hazard",
+        id: "hazard-tint", type: "fill", ...at("hazard"),
         paint: { "fill-color": HAZARD_INK, "fill-opacity": 0.14 },
       },
       {
-        id: "hazard-fill", type: "fill", source: "roads", "source-layer": "hazard",
+        id: "hazard-fill", type: "fill", ...at("hazard"),
         paint: { "fill-pattern": "hazard-hatch", "fill-opacity": 0.95 },
       },
       {
-        id: "hazard-rim", type: "line", source: "roads", "source-layer": "hazard",
+        id: "hazard-rim", type: "line", ...at("hazard"),
         layout: { "line-join": "round" },
         paint: { "line-color": "#ffffff", "line-width": 7, "line-opacity": 0.95 },
       },
       {
-        id: "hazard-line", type: "line", source: "roads", "source-layer": "hazard",
+        id: "hazard-line", type: "line", ...at("hazard"),
         layout: { "line-join": "round" },
         paint: { "line-color": HAZARD_INK, "line-width": 3 },
       },
@@ -234,7 +267,7 @@ function roadLayers(sourceLayer: string, classField: string, minClass: number, o
       // out against the red roads and the hatching it often sits on.
       // The same yellow glow around every building it cuts off or floods.
       {
-        id: "hazard-hl-bldg", type: "line", source: "roads", "source-layer": "hazard_buildings",
+        id: "hazard-hl-bldg", type: "line", ...at("hazard_buildings"),
         layout: { "line-join": "round", visibility: "none" },
         paint: {
           "line-color": HIGHLIGHT, "line-opacity": 1,
@@ -244,18 +277,18 @@ function roadLayers(sourceLayer: string, classField: string, minClass: number, o
       },
       ...(["in_hazard", "cut_off"] as HazardBuildingStatus[]).flatMap((k) => [
         {
-          id: `hazard-bldg-${k}-halo`, type: "line", source: "roads", "source-layer": "hazard_buildings",
+          id: `hazard-bldg-${k}-halo`, type: "line", ...at("hazard_buildings"),
           filter: ["==", ["get", "status"], k],
           layout: { "line-join": "round" },
           paint: { "line-color": "#ffffff", "line-width": ["interpolate", ["linear"], ["zoom"], 12, 1.5, 16, 4] },
         },
         {
-          id: `hazard-bldg-${k}`, type: "fill", source: "roads", "source-layer": "hazard_buildings",
+          id: `hazard-bldg-${k}`, type: "fill", ...at("hazard_buildings"),
           filter: ["==", ["get", "status"], k],
           paint: { "fill-color": HAZARD_BUILDING_COLORS[k], "fill-opacity": 1 },
         },
         {
-          id: `hazard-bldg-${k}-edge`, type: "line", source: "roads", "source-layer": "hazard_buildings",
+          id: `hazard-bldg-${k}-edge`, type: "line", ...at("hazard_buildings"),
           filter: ["==", ["get", "status"], k],
           layout: { "line-join": "round" },
           paint: { "line-color": "#141414", "line-width": ["interpolate", ["linear"], ["zoom"], 12, 0.6, 16, 1.6] },
@@ -263,7 +296,7 @@ function roadLayers(sourceLayer: string, classField: string, minClass: number, o
       ]),
     );
   }
-  layers.push(hitLayer(sourceLayer, classField, minClass));
+  layers.push(hitLayer(at, classField, minClass));
   return layers;
 }
 const HAZARD_BLDG_LAYERS = (k: HazardBuildingStatus) =>
@@ -374,6 +407,60 @@ const glowColors = (basemap: BasemapKey) => {
   return { halo: mix(HIGHLIGHT, ground, 0.5), core: mix(GLOW_CORE, ground, 0.7) };
 };
 
+// The area being drawn: a see-through bright green fill, its edges in the
+// same green over a dark green line (so they read on light gray as well as
+// dark gray), a dashed line to the mouse, and white corners.
+const DRAW_GREEN = "#2ECC8C";
+const DRAW_DARK = "#0b3d2a";
+const role = (r: string): any => ["==", ["get", "role"], r];
+const DRAW_LAYERS: any[] = [
+  { id: "draw-fill", type: "fill", source: "draw", filter: role("fill"),
+    paint: { "fill-color": DRAW_GREEN, "fill-opacity": 0.22 } },
+  { id: "draw-edge-dark", type: "line", source: "draw", filter: role("edge"),
+    layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": DRAW_DARK, "line-width": 6 } },
+  { id: "draw-edge", type: "line", source: "draw", filter: role("edge"),
+    layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": DRAW_GREEN, "line-width": 3 } },
+  { id: "draw-band", type: "line", source: "draw", filter: role("band"),
+    paint: { "line-color": DRAW_GREEN, "line-width": 2.5, "line-dasharray": [2, 1.5] } },
+  { id: "draw-vertex", type: "circle", source: "draw", filter: role("vertex"),
+    paint: { "circle-radius": 5.5, "circle-color": "#ffffff", "circle-stroke-color": DRAW_GREEN, "circle-stroke-width": 3 } },
+];
+
+// The drawing as map features: the corners so far, and while drawing, the
+// mouse position as a corner still to come.
+function drawData(pts: [number, number][], cursor: [number, number] | null, active: boolean): GeoJSON.FeatureCollection {
+  const f = (r: string, geometry: GeoJSON.Geometry): GeoJSON.Feature => ({ type: "Feature", properties: { role: r }, geometry });
+  const out: GeoJSON.Feature[] = [];
+  const ring = active && cursor ? [...pts, cursor] : pts;
+  if (ring.length >= 3) out.push(f("fill", { type: "Polygon", coordinates: [[...ring, ring[0]]] }));
+  if (active) {
+    if (pts.length >= 2) out.push(f("edge", { type: "LineString", coordinates: pts }));
+    if (cursor && pts.length >= 1) {
+      out.push(f("band", { type: "LineString", coordinates: pts.length >= 2 ? [pts[pts.length - 1], cursor, pts[0]] : [pts[0], cursor] }));
+    }
+    pts.forEach((p) => out.push(f("vertex", { type: "Point", coordinates: p })));
+  } else if (pts.length >= 3) {
+    out.push(f("edge", { type: "LineString", coordinates: [...pts, pts[0]] }));
+  }
+  return { type: "FeatureCollection", features: out };
+}
+
+// The point half way along a line, for a route's numbered marker.
+function midpoint(g: GeoJSON.LineString): [number, number] {
+  const c = g.coordinates as [number, number][];
+  if (c.length < 2) return c[0] ?? [0, 0];
+  const seg = c.slice(1).map((p, i) => Math.hypot(p[0] - c[i][0], (p[1] - c[i][1]) * 1.2));
+  let half = seg.reduce((a, b) => a + b, 0) / 2;
+  for (let i = 0; i < seg.length; i++) {
+    if (half <= seg[i]) {
+      const t = seg[i] ? half / seg[i] : 0;
+      return [c[i][0] + (c[i + 1][0] - c[i][0]) * t, c[i][1] + (c[i + 1][1] - c[i][1]) * t];
+    }
+    half -= seg[i];
+  }
+  return c[c.length - 1];
+}
+
 interface Props {
   tilesUrl: string;             // pmtiles file to draw
   sourceLayer: string;          // layer name inside it
@@ -419,7 +506,55 @@ interface Props {
   // edge, as [left, top, right, bottom] in map pixels. The map slides the
   // hazard out from under it.
   guideCard?: [number, number, number, number] | null;
+  // A drawn area's results, shown in place of the PMTiles file. tilesUrl is
+  // then "run:<run_id>", which is what tells the map to rebuild.
+  run?: RunFiles | null;
+  // Drawing an area: while true, clicks add corners and the road popups are
+  // off. onDraw hears every change (the corners, and where the mouse is),
+  // onDrawFinish is asked whether the shape may be finished, and
+  // onDrawCancel hears Escape.
+  drawing?: boolean;
+  onDraw?: (corners: [number, number][], cursor: [number, number] | null, lastPx: [number, number] | null) => void;
+  onDrawFinish?: (corners: [number, number][]) => boolean;
+  onDrawCancel?: () => void;
+  // An outline to keep on the map in the drawing colour, outside drawing:
+  // the area just drawn, while it is named and run.
+  drawShape?: [number, number][] | null;
+  // Extra content for a clicked road's popup on the pinch tab: the
+  // alternate routes tool. Given the road's properties and where it was
+  // clicked; it can draw routes on the map through `show`.
+  routeBox?: (ctx: RouteBoxCtx) => ReactNode;
+  // A saved set of routes to open: the map goes to its road and opens the
+  // road's popup with the saved routes in it, asking the API for nothing.
+  // `key` changes with each pick, so picking the same set twice still opens it.
+  openRoutes?: { key: string; saved: SavedRoute } | null;
 }
+
+export interface RouteBoxCtx {
+  key: number;                       // changes with each clicked road
+  props: Record<string, any>;
+  lngLat: [number, number];
+  saved: SavedRoute | null;          // a saved set being reopened, if that is what this is
+  html: string;                      // the road's usual popup
+  show: (routes: { geometry: GeoJSON.LineString; color: string; ink: string; n: number }[]) => void;
+  relayout: () => void;              // the content changed size: place the popup again
+  close: () => void;                 // shut the popup, its routes and the glow
+  // Hovering a route's line on the map or its row in the popup lights both
+  // (the user asked for the two to highlight each other). `highlight` sets
+  // the lit route (null for none); `onHighlight` hears every change, from
+  // either side, and returns its unsubscribe.
+  highlight: (n: number | null) => void;
+  onHighlight: (f: (n: number | null) => void) => () => void;
+}
+
+// The route lines' widths, plain and lit, as zoom-scaled expressions.
+const routeWidth = (lit: number | null, casing: boolean): any => {
+  const [lo, hi] = casing ? [7, 11] : [4, 7];
+  const [loLit, hiLit] = casing ? [11, 16] : [7, 11];
+  if (lit == null) return ["interpolate", ["linear"], ["zoom"], 10, lo, 15, hi];
+  const on = ["==", ["get", "n"], lit];
+  return ["interpolate", ["linear"], ["zoom"], 10, ["case", on, loLit, lo], 15, ["case", on, hiLit, hi]];
+};
 
 // One road to travel to and open the guide popup on. `key` changes when the
 // request does, so asking for the same road twice still moves the map.
@@ -442,7 +577,8 @@ export default function MapView({
   countyKey, onEmptyChange, fullBounds, fullLabel, focus, onFocusFeature, onInteract,
   guide, onGuideAway, onGuideClosed, hazard = null, buildingsUrl = null, services = null,
   hazardBuildings = ["cut_off", "in_hazard"], guideOnHazard = false, guideStep = -1,
-  guideCard = null,
+  guideCard = null, run = null, drawing = false, onDraw, onDrawFinish, onDrawCancel, drawShape = null,
+  routeBox, openRoutes = null,
 }: Props) {
   const div = useRef<HTMLDivElement>(null);
   const map = useRef<Map | null>(null);
@@ -456,6 +592,50 @@ export default function MapView({
   // the current props, read by handlers that are registered once
   const latest = useRef({ tilesUrl, sourceLayer, classField, score, basemap, opacity, minClass, countyKey, hazard, hazardBuildings });
   latest.current = { tilesUrl, sourceLayer, classField, score, basemap, opacity, minClass, countyKey, hazard, hazardBuildings };
+  const runRef = useRef(run);
+  runRef.current = run;
+  const drawingRef = useRef(drawing);
+  drawingRef.current = drawing;
+  const drawCb = useRef({ onDraw, onDrawFinish, onDrawCancel });
+  drawCb.current = { onDraw, onDrawFinish, onDrawCancel };
+  const routeBoxRef = useRef(routeBox);
+  routeBoxRef.current = routeBox;
+  // The clicked pinch road's popup, when it carries the routes tool, and the
+  // numbered markers of the routes drawn for it.
+  const [routeHost, setRouteHost] = useState<{ el: HTMLElement; ctx: RouteBoxCtx } | null>(null);
+  const routeMarkers = useRef<maplibregl.Marker[]>([]);
+  const routeSeq = useRef(0);
+  // The lit route, shared by the map and the popup.
+  const routeHl = useRef<{ lit: number | null; listeners: Set<(n: number | null) => void> }>({ lit: null, listeners: new Set() });
+  const setRouteHl = (m: Map, n: number | null) => {
+    const hl = routeHl.current;
+    if (hl.lit === n) return;
+    hl.lit = n;
+    if (m.getLayer("alt-routes-line")) {
+      const fade: any = n == null ? 1 : ["case", ["==", ["get", "n"], n], 1, 0.3];
+      m.setPaintProperty("alt-routes-line", "line-width", routeWidth(n, false));
+      m.setPaintProperty("alt-routes-casing", "line-width", routeWidth(n, true));
+      m.setPaintProperty("alt-routes-line", "line-opacity", fade);
+      m.setPaintProperty("alt-routes-casing", "line-opacity", fade);
+      // the lit route drawn over the others
+      const key: any = n == null ? ["-", 0, ["get", "n"]] : ["case", ["==", ["get", "n"], n], 100, ["-", 0, ["get", "n"]]];
+      m.setLayoutProperty("alt-routes-line", "line-sort-key", key);
+      m.setLayoutProperty("alt-routes-casing", "line-sort-key", key);
+    }
+    routeMarkers.current.forEach((mk, i) => {
+      const el = mk.getElement();
+      el.style.opacity = n == null || n === i + 1 ? "1" : "0.4";
+      el.style.transform = el.style.transform.replace(/ scale\([^)]*\)/, "") + (n === i + 1 ? " scale(1.25)" : "");
+      el.style.zIndex = n === i + 1 ? "2" : "";
+    });
+    hl.listeners.forEach((f) => f(n));
+  };
+  const clearRoutes = (m: Map) => {
+    setRouteHl(m, null);
+    routeMarkers.current.forEach((mk) => mk.remove());
+    routeMarkers.current = [];
+    (m.getSource("alt-routes") as maplibregl.GeoJSONSource | undefined)?.setData(EMPTY_FC);
+  };
   const roadHtml = (p: Record<string, any>) => {
     const l = latest.current;
     return l.hazard
@@ -508,7 +688,7 @@ export default function MapView({
   // that is the hazard's own popup.
   const pin = (m: Map, lngLat: maplibregl.LngLatLike, hit: maplibregl.MapGeoJSONFeature | null,
                asGuide = false, html?: string, className?: string,
-               anchor?: maplibregl.PositionAnchor) => {
+               anchor?: maplibregl.PositionAnchor, saved: SavedRoute | null = null) => {
     const glow = m.getSource("hover") as maplibregl.GeoJSONSource | undefined;
     hover.current?.remove();
     pinned.current?.remove();
@@ -534,17 +714,98 @@ export default function MapView({
       host.style.setProperty("--guide-room", `${Math.max(180, room)}px`);
     };
     if (host) { guideFit.current = fit; guideRoad.current = p.getLngLat(); }
+    // A clicked road on the pinch tab also gets the alternate routes tool,
+    // drawn by the page into this popup.
+    const routeEl = !host && !html && hit && routeBoxRef.current && latest.current.sourceLayer === "pinch"
+      && hit.properties?.overture_id ? document.createElement("div") : null;
     if (host) {
       p.setDOMContent(host);
       fit();
       m.on("move", fit);
       m.on("resize", fit);
+    } else if (routeEl) {
+      p.setDOMContent(routeEl);
     } else {
       p.setHTML(html ?? roadHtml(hit?.properties ?? {}));
     }
+    clearRoutes(m);
     p.addTo(m);
+    if (routeEl && hit) {
+      const ll = p.getLngLat();
+      const ctx: RouteBoxCtx = {
+        key: ++routeSeq.current, props: hit.properties ?? {}, lngLat: [ll.lng, ll.lat], saved,
+        html: roadHtml(hit.properties ?? {}),
+        relayout: () => { if (pinned.current === p) requestAnimationFrame(() => p.setLngLat(p.getLngLat())); },
+        close: () => { if (pinned.current === p) p.remove(); },
+        highlight: (n) => { if (pinned.current === p) setRouteHl(m, n); },
+        onHighlight: (f) => {
+          routeHl.current.listeners.add(f);
+          return () => { routeHl.current.listeners.delete(f); };
+        },
+        show: (routes) => {
+          if (pinned.current !== p) return;
+          clearRoutes(m);
+          (m.getSource("alt-routes") as maplibregl.GeoJSONSource | undefined)?.setData({
+            type: "FeatureCollection",
+            // drawn last to first, so route 1 ends up on top
+            features: [...routes].reverse().map((r) => ({ type: "Feature", geometry: r.geometry, properties: { color: r.color, n: r.n } })),
+          });
+          routeMarkers.current = routes.map((r) => {
+            const el = document.createElement("div");
+            el.className = "route-marker";
+            el.textContent = String(r.n);
+            el.style.background = r.color;
+            el.style.color = r.ink;
+            el.style.cursor = "pointer";
+            el.addEventListener("mouseenter", () => setRouteHl(m, r.n));
+            el.addEventListener("mouseleave", () => setRouteHl(m, null));
+            return new maplibregl.Marker({ element: el }).setLngLat(midpoint(r.geometry)).addTo(m);
+          });
+          if (!routes.length) return;
+          // Fit the routes into the map beside the popup, which moves to the
+          // routes' right-hand edge when the map is wide enough for both.
+          const all = routes.flatMap((r) => r.geometry.coordinates as [number, number][]);
+          const xs = all.map((c) => c[0]), ys = all.map((c) => c[1]);
+          const b: [[number, number], [number, number]] = [[Math.min(...xs), Math.min(...ys)], [Math.max(...xs), Math.max(...ys)]];
+          const W = m.getContainer().clientWidth;
+          // clear of the legend and the Basemap button at the map's top left
+          const box = m.getContainer().getBoundingClientRect();
+          const legend = document.querySelector<HTMLElement>('[data-guide="legend"]')?.getBoundingClientRect();
+          const clear = legend && legend.width > 200 ? Math.max(50, Math.round(legend.right - box.left + 20)) : 50;
+          // the popup takes the right-hand 440 px when the map is wide enough;
+          // the routes keep clear of the legend when there is room for that too
+          const side = W >= 760;
+          const besideOk = W - 440 - clear >= 320;
+          const left = !side || besideOk ? clear : 50;
+          // Too narrow to keep beside the legend: keep below it instead, when
+          // that leaves the routes at least 240 px of height.
+          const H = m.getContainer().clientHeight;
+          const below = legend && legend.width > 200 ? Math.round(legend.bottom - box.top + 20) : 50;
+          const top = side && !besideOk && H - below - 50 >= 240 ? below : 50;
+          const fit = {
+            padding: side ? { top, bottom: 50, left, right: 440 } : { top: 60, bottom: 50, left: Math.min(left, W / 3), right: 50 },
+            maxZoom: 16,
+          };
+          // where the map will be centred once fitted: the popup sits at the
+          // map's middle height, so a tall popup never runs off the bottom
+          // when the routes are held below the legend
+          const cam = m.cameraForBounds(b, fit);
+          m.fitBounds(b, { ...fit, duration: 700 });
+          if (side) {
+            p.options.anchor = "left";
+            const midLat = cam?.center ? maplibregl.LngLat.convert(cam.center).lat : (b[0][1] + b[1][1]) / 2;
+            p.setLngLat([b[1][0], midLat]);
+          }
+        },
+      };
+      setRouteHost({ el: routeEl, ctx });
+    }
     p.on("close", () => {
       if (pinned.current === p) pinned.current = null;
+      if (routeEl) {
+        clearRoutes(m);
+        setRouteHost((h) => (h?.el === routeEl ? null : h));
+      }
       (m.getSource("hover") as maplibregl.GeoJSONSource | undefined)?.setData(EMPTY_FC);
       if (guidePopup.current === p) {
         m.off("move", fit);
@@ -563,6 +824,8 @@ export default function MapView({
     }
   };
   const wasEmpty = useRef<boolean | null>(null);
+  // the tiles and layer the road layers were last built for
+  const built = useRef(`${tilesUrl}|${sourceLayer}`);
 
   // the flyKey the view currently reflects; see the fly effect below
   const lastFlyKey = useRef(flyKey);
@@ -596,7 +859,9 @@ export default function MapView({
         version: 8,
         sources: {
           ...baseSources,
-          roads: { type: "vector", url: `pmtiles://${tilesUrl}` },
+          ...roadSources(tilesUrl, run),
+          draw: { type: "geojson", data: EMPTY_FC },
+          "alt-routes": { type: "geojson", data: EMPTY_FC },
           hover: { type: "geojson", data: EMPTY_FC },
           mask: { type: "geojson", data: maskData(hazard) },
           "hazard-point": { type: "geojson", data: markerData(hazard) },
@@ -611,7 +876,8 @@ export default function MapView({
           ...HOVER_LAYERS,
           // Built into the style rather than set afterwards, for the same
           // reason as the basemap above: the first paint is already correct.
-          ...roadLayers(sourceLayer, classField, minClass, opacity, hazard != null),
+          ...roadLayers(isRunKey(tilesUrl) && run ? runAt : tilesAt(sourceLayer), classField, minClass, opacity,
+            hazard != null),
           {
             id: "hazard-marker", type: "circle", source: "hazard-point",
             paint: {
@@ -622,6 +888,21 @@ export default function MapView({
               "circle-stroke-opacity": ["interpolate", ["linear"], ["zoom"], 11, 1, 12, 0],
             },
           },
+          // The alternate routes, over the roads: a white casing and the
+          // route's own colour.
+          {
+            id: "alt-routes-casing", type: "line", source: "alt-routes",
+            layout: { "line-cap": "round", "line-join": "round" },
+            paint: { "line-color": "#ffffff", "line-width": ["interpolate", ["linear"], ["zoom"], 10, 7, 15, 11] },
+          },
+          {
+            id: "alt-routes-line", type: "line", source: "alt-routes",
+            layout: { "line-cap": "round", "line-join": "round" },
+            paint: { "line-color": ["get", "color"], "line-width": ["interpolate", ["linear"], ["zoom"], 10, 4, 15, 7] },
+          },
+          // The area being drawn, on top of everything: a bright green
+          // over a dark green edge, so it reads on both gray basemaps.
+          ...DRAW_LAYERS,
         ],
       },
       // A guided example opens already on its road, so the first thing on
@@ -678,6 +959,10 @@ export default function MapView({
 
     m.on("load", () => {
       ready.current = true;
+      const l = latest.current;
+      if (built.current !== `${l.tilesUrl}|${l.sourceLayer}`) rebuild(m);
+      (m.getSource("mask") as maplibregl.GeoJSONSource | undefined)?.setData(maskData(l.hazard));
+      (m.getSource("hazard-point") as maplibregl.GeoJSONSource | undefined)?.setData(markerData(l.hazard));
       apply(m);
     });
 
@@ -748,6 +1033,7 @@ export default function MapView({
     // Once one is showing, moving onto the next road updates it at once.
     // Nothing pops up while the map is being dragged or zoomed.
     let hoverTimer: ReturnType<typeof setTimeout> | undefined;
+    let routeLitByMap = false;
     const HOVER_DELAY_MS = 250;
     const stopHover = () => { clearTimeout(hoverTimer); hover.current?.remove(); };
     // the mouse button is down: a drag may be starting, or paused mid-way
@@ -767,6 +1053,23 @@ export default function MapView({
     m.on("mousemove", (e: MapMouseEvent) => {
       clearTimeout(hoverTimer);
       if (pressed || m.isMoving()) { stopHover(); return; }
+      // no popups while an area is being drawn
+      if (drawingRef.current) { stopHover(); hazardHover.current?.remove(); return; }
+      // Alternate routes on the map: hovering one lights it and its row in
+      // the popup (a few pixels' slack, so thin lines are easy to find).
+      if (routeMarkers.current.length && m.getLayer("alt-routes-line")) {
+        const { x, y } = e.point;
+        const f = m.queryRenderedFeatures([[x - 4, y - 4], [x + 4, y + 4]], { layers: ["alt-routes-line"] })
+          .sort((a, b) => (a.properties?.n ?? 9) - (b.properties?.n ?? 9))[0];
+        const n = f ? Number(f.properties?.n) : null;
+        if (n != null) {
+          routeLitByMap = true;
+          setRouteHl(m, n);
+          m.getCanvas().style.cursor = "pointer";
+          return;
+        }
+        if (routeLitByMap) { routeLitByMap = false; setRouteHl(m, null); }
+      }
       const svc = pickService(e);
       const marker = svc ? null : pickMarker(e);
       const hit = svc || marker ? null : pick(e);
@@ -853,6 +1156,7 @@ export default function MapView({
       // on as usual and shuts the guide on the way. The second click of a
       // double-click (a zoom) is never a click away: without this, one
       // double-click would use the nudge and close the guide together.
+      if (drawingRef.current) return;
       if (guideInView()) {
         if (e.originalEvent.detail > 1) return;
         if (awayCb.current?.()) return;
@@ -895,17 +1199,27 @@ export default function MapView({
   // Swapping counties or hazards means a different tile file. MapLibre cannot
   // repoint a vector source's url, so the source and its layers are rebuilt,
   // each slotted back in under the hazard marker.
-  useEffect(() => {
-    const m = map.current;
-    if (!m || !ready.current) return;
+  //
+  // A change that comes before the map has loaded (a drawn area's results
+  // read while the first tiles are still loading) is made on "load" instead.
+  const rebuild = (m: Map) => {
+    const { tilesUrl, sourceLayer, classField, minClass, opacity, hazard } = latest.current;
+    built.current = `${tilesUrl}|${sourceLayer}`;
     for (const id of ROAD_LAYER_IDS) if (m.getLayer(id)) m.removeLayer(id);
-    if (m.getSource("roads")) m.removeSource("roads");
-    m.addSource("roads", { type: "vector", url: `pmtiles://${tilesUrl}` } as any);
-    for (const layer of roadLayers(sourceLayer, classField, minClass, opacity, hazard != null)) {
+    for (const id of ROAD_SOURCE_IDS) if (m.getSource(id)) m.removeSource(id);
+    const useRun = isRunKey(tilesUrl) && runRef.current;
+    for (const [id, src] of Object.entries(roadSources(tilesUrl, runRef.current))) m.addSource(id, src);
+    for (const layer of roadLayers(useRun ? runAt : tilesAt(sourceLayer), classField, minClass, opacity, hazard != null)) {
       m.addLayer(layer, "hazard-marker");
     }
     wasEmpty.current = null;   // re-answered on the next idle
     apply(m);
+  };
+  useEffect(() => {
+    const m = map.current;
+    if (!m || !ready.current) return;
+    if (built.current === `${tilesUrl}|${sourceLayer}`) return;
+    rebuild(m);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tilesUrl, sourceLayer]);
 
@@ -1127,6 +1441,40 @@ export default function MapView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focus?.key]);
 
+  // A saved set of routes, picked from "Your routes": go to its road, find
+  // the road in the tiles by its Overture id so it glows as after a click, and
+  // open its popup with the saved routes. When the road cannot be found (its
+  // tiles not drawn yet after a few looks), the popup opens anyway from the
+  // saved properties, just without the glow. Idempotent, like the focus above.
+  useEffect(() => {
+    const m = map.current;
+    if (!m || !openRoutes) return;
+    const s = openRoutes.saved;
+    const at: [number, number] = [s.lon, s.lat];
+    m.flyTo({ center: at, zoom: Math.max(m.getZoom(), 15), duration: 900 });
+    let looks = 0;
+    // A settled map fires "idle" only once, so a look that misses the road
+    // asks for another a little later; without it a road that is no longer
+    // in the tiles (rebuilt since the set was saved) never opened at all.
+    let again = 0;
+    const look = () => {
+      if (m.isMoving() || !m.getLayer("roads-hit")) return;
+      const pt = m.project(at);
+      const R = 16;
+      const hit = m.queryRenderedFeatures([[pt.x - R, pt.y - R], [pt.x + R, pt.y + R]], { layers: ["roads-hit"] })
+        .find((f) => String(f.properties?.overture_id ?? "") === s.overture_id);
+      if (!hit && ++looks < 6) { again = window.setTimeout(() => m.triggerRepaint(), 300); return; }
+      m.off("idle", look);
+      const stand = { type: "Feature", geometry: { type: "Point", coordinates: at },
+        properties: { ...s.props, overture_id: s.overture_id } } as any;
+      pin(m, at, hit ?? stand, false, undefined, undefined, undefined, s);
+    };
+    m.on("idle", look);
+    m.triggerRepaint();
+    return () => { m.off("idle", look); window.clearTimeout(again); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openRoutes?.key]);
+
   // The guide never covers the hazard on the functional isolation tab. On
   // the road steps the map puts the hazard (with the example road) at its
   // left side, centred from top to bottom, and the guide sits right beside
@@ -1196,6 +1544,101 @@ export default function MapView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cardKey, hazard]);
 
+  // Drawing an area. Each click adds a corner; a double-click, a click on
+  // the first corner or Enter finishes (if the page accepts the shape);
+  // Backspace takes the last corner off and Escape stops. Double-click zoom
+  // is off meanwhile, and so are the road popups (see mousemove and click).
+  useEffect(() => {
+    const m = map.current;
+    if (!m || !drawing) return;
+    const pts: [number, number][] = [];
+    let cursor: [number, number] | null = null;
+    let done = false;
+    hover.current?.remove();
+    hazardHover.current?.remove();
+    pinned.current?.remove();
+    pinned.current = null;
+    (m.getSource("hover") as maplibregl.GeoJSONSource | undefined)?.setData(EMPTY_FC);
+    m.doubleClickZoom.disable();
+    const canvas = m.getCanvas();
+    canvas.style.cursor = "crosshair";
+    const render = () => {
+      (m.getSource("draw") as maplibregl.GeoJSONSource | undefined)?.setData(drawData(pts, cursor, true));
+      // where the last corner sits on screen, so Finish and Cancel can sit
+      // beside it (and follow it when the map pans or zooms)
+      const last = pts.length ? m.project(pts[pts.length - 1]) : null;
+      drawCb.current.onDraw?.([...pts], cursor, last ? [last.x, last.y] : null);
+    };
+    const onMapMove = () => { if (!done) render(); };
+    const nearFirst = (pt: maplibregl.Point) => {
+      if (pts.length < 3) return false;
+      const f = m.project(pts[0]);
+      return Math.hypot(f.x - pt.x, f.y - pt.y) < 10;
+    };
+    const finish = () => {
+      if (done) return;
+      if (drawCb.current.onDrawFinish?.([...pts])) done = true;
+    };
+    const onClick = (e: MapMouseEvent) => {
+      if (done || e.originalEvent.detail > 1) return;   // the second click of a double-click
+      if (nearFirst(e.point)) { finish(); return; }
+      pts.push([e.lngLat.lng, e.lngLat.lat]);
+      render();
+    };
+    const onDbl = (e: MapMouseEvent) => { e.preventDefault(); finish(); };
+    const onMove = (e: MapMouseEvent) => {
+      if (done) return;
+      cursor = [e.lngLat.lng, e.lngLat.lat];
+      canvas.style.cursor = nearFirst(e.point) ? "pointer" : "crosshair";
+      render();
+    };
+    const onOut = () => { cursor = null; if (!done) render(); };
+    const onKey = (ev: KeyboardEvent) => {
+      const t = ev.target as HTMLElement | null;
+      if (done || (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable))) return;
+      if (ev.key === "Backspace" || ev.key === "Delete") { ev.preventDefault(); pts.pop(); render(); }
+      else if (ev.key === "Escape") drawCb.current.onDrawCancel?.();
+      else if (ev.key === "Enter") finish();
+    };
+    m.on("click", onClick);
+    m.on("dblclick", onDbl);
+    m.on("mousemove", onMove);
+    m.on("move", onMapMove);
+    canvas.addEventListener("mouseout", onOut);
+    window.addEventListener("keydown", onKey);
+    render();
+    return () => {
+      m.off("click", onClick);
+      m.off("dblclick", onDbl);
+      m.off("mousemove", onMove);
+      m.off("move", onMapMove);
+      canvas.removeEventListener("mouseout", onOut);
+      window.removeEventListener("keydown", onKey);
+      m.doubleClickZoom.enable();
+      canvas.style.cursor = "";
+    };
+  }, [drawing]);
+
+  // Outside drawing, the outline the page asks to keep (the area just drawn,
+  // while it is named and run), or nothing.
+  const shapeKey = drawShape ? JSON.stringify(drawShape) : "";
+  useEffect(() => {
+    const m = map.current;
+    if (!m || drawing) return;
+    const set = () => (m.getSource("draw") as maplibregl.GeoJSONSource | undefined)
+      ?.setData(drawData(drawShape ?? [], null, false));
+    if (ready.current) set();
+    else m.once("load", set);
+    return () => { m.off("load", set); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drawing, shapeKey]);
+
+  // Once the routes tool has drawn into a clicked road's popup, place the
+  // popup again for its new size.
+  useEffect(() => {
+    routeHost?.ctx.relayout();
+  }, [routeHost]);
+
   // The page took the guide away (its close button, Done, or a change in the
   // panel), so take its popup off the map.
   const hasGuide = guide != null;
@@ -1207,6 +1650,7 @@ export default function MapView({
     <>
       <div ref={div} style={{ position: "absolute", inset: 0 }} />
       {guideHost && guide != null && createPortal(guide, guideHost)}
+      {routeHost && routeBox && createPortal(routeBox(routeHost.ctx), routeHost.el, String(routeHost.ctx.key))}
     </>
   );
 }
@@ -1464,10 +1908,17 @@ function describeIsolation(p: Record<string, any>, classField: string, score: Sc
     });
   }
 
-  const before = Number(p[`bld_${minutes}m_baseline`]);
+  const before = p[`bld_${minutes}m_baseline`] == null ? NaN : Number(p[`bld_${minutes}m_baseline`]);
   const lost = Number(p[`lost_${minutes}m`] ?? 0);
   // Led by the share, in the same words as the panel: what a person on this
   // road can no longer get to. The counts behind it follow.
+  if (!isFinite(before) && p[`loss_${minutes}m`] != null) {
+    // A drawn area's files carry the share alone, without the counts.
+    sections.push({ heading: "For someone on this road", lead: loss > 0, lines: [loss > 0
+      ? `About ${humanPercent(loss)} of the homes, shops, schools and other buildings they could drive `
+        + `to within ${minutes} minutes are now out of reach.`
+      : `Everything they could drive to within ${minutes} minutes is still in reach.`] });
+  }
   if (isFinite(before)) {
     const lines: string[] = [];
     if (before <= 0) lines.push(`No buildings are within a ${minutes} minute drive of here.`);
@@ -1583,7 +2034,7 @@ function describeService(p: Record<string, any>): string {
 // hazard-pop class in index.html), so it never reads as a road's popup.
 function describeHazard(h: Hazard): string {
   const w = HAZARD_WORDS[h.kind];
-  const kind = h.kind.charAt(0).toUpperCase() + h.kind.slice(1);
+  const kind = h.kind === "drawn" ? "Your area" : h.kind.charAt(0).toUpperCase() + h.kind.slice(1);
   const n = (v: number, one: string, many: string) => `${humanNumber(v)} ${v === 1 ? one : many}`;
   const lines = [
     h.about[0],

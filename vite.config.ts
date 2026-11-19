@@ -28,7 +28,9 @@ function serveRepoDocs() {
       const out = path.resolve(__dirname, "dist", "docs");
       if (!fs.existsSync(docsDir)) return;
       fs.mkdirSync(out, { recursive: true });
-      for (const f of fs.readdirSync(docsDir).filter((f) => f.endsWith(".md"))) {
+      // local-setup.md is opened only from the dev server's "This computer /
+      // AWS (live)" switch, which a production build never shows.
+      for (const f of fs.readdirSync(docsDir).filter((f) => f.endsWith(".md") && f !== "local-setup.md")) {
         fs.copyFileSync(path.join(docsDir, f), path.join(out, f));
       }
     },

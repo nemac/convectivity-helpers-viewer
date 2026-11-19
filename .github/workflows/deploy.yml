@@ -40,7 +40,12 @@ jobs:
 
       - run: npm ci
 
+      # VITE_ONDEMAND_LIVE turns on Draw a hazard and the alternate routes
+      # button on the published site; their APIs run on AWS
+      # (functionalisolationapi.nemac.org, altroutesapi.nemac.org).
       - run: npm run build
+        env:
+          VITE_ONDEMAND_LIVE: "1"
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:

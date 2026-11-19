@@ -215,7 +215,78 @@ and unrestricted, so some modelled detours are not legally drivable.
 
 ---
 
-## 6. References
+## 6. Alternate routes around a closed road (in testing)
+
+Clicking a road gives up to three ways round it if it is closed, each with
+turn-by-turn directions, the extra time and distance, and a label: Truck safe,
+Not truck safe, or Possibly truck safe with the reason. Unlike the pinch
+score, these routes follow one-way rules and turn restrictions, on the same
+Overture release. A route is truck safe when it keeps to roads a semi may use
+(no service roads or small residential streets, and no road Overture marks as
+closed to trucks), with no bend or junction turn too tight for a standard
+semi (AASHTO WB-67, about a 45 ft turning radius). If no route is truck safe
+it says so. Each county is prepared ahead of time, plus 25 miles around it.
+It is still in testing on NEMAC's computer and not yet online.
+
+**What the tool does now**
+
+- The tab is now called "Pinch points & alternate routing".
+- Click a road, then "Get alternate and truck-safe routes" in its popup.
+  Hovering a route on the map lights its row in the popup, and hovering a row
+  lights the route on the map.
+- When only 1 or 2 ways round are found, the popup says so in bold above the
+  routes, with the reason under them.
+- The routes can be downloaded as a CSV file, one row per step.
+- A set of routes can be saved with a name. Saved routes are kept in this
+  browser for 7 days and listed in "Your routes" in the panel, above
+  Methodology, with the date each expires and the time left. Opening one
+  again uses no daily click. The X beside one removes it from this browser
+  at once; if it is on the map, its routes are cleared.
+- When a truck route is almost the same as a car route, the truck route now
+  takes that car route's place, so no two routes are near copies.
+- It has its own access code, separate from the drawing tool's. The published
+  site and a copy running on a computer each have their own.
+- In the first week there are 2,000 route clicks a day, then 1,000. The
+  monthly cost cap of $25 in the first week, then $10, is shared with the
+  drawing tool and turns both off until the next month if it is reached.
+- Until the tool is online, the published site does not show it.
+
+**Things to improve**
+
+- Long detours, such as around lakes and rivers, take 1 to 2 seconds per
+  click. When the service is busy that can rise to about 6 seconds.
+- The first click after a quiet spell takes about 3 seconds while the county
+  loads. It may take longer on real AWS.
+- A few routes labelled truck safe make a tight loop of 130 to 200 ft of road
+  to turn round, which may be too tight for a semi.
+- Some truck routes rejoin the road 8 to 16 miles past the closure. That
+  follows the truck rules but looks odd.
+- A car route that starts by turning round can be labelled "Possibly truck
+  safe". "Not truck safe" may be clearer.
+- About 3% of clicks in Haywood get "Possibly truck safe" because of a gap in
+  a median.
+- "A semi cannot turn off at the start" sometimes shows even when the car
+  route starts in the same place.
+- Routes only go 25 miles beyond the county. For very long detours, such as
+  the I-40 gorge, it says the route may leave the area.
+- Truck-safe routes do not check bridge heights. A route marked truck safe
+  can still pass under a bridge too low for a semi.
+- Truck safety is only as good as Overture's data. Weight limits and other
+  truck rules count only where Overture records them.
+- Drive times come from road types and speed limits, with no traffic.
+
+**Good to know (pinch points map)**
+
+- 37.8% of roads score zero on purpose because they are dead ends. Closing
+  one only affects the homes on it.
+- A detour of "none found within 3.1 miles" means no way round was found
+  nearby. It is not a measured distance.
+- Divided highways score low, correctly. Closing one side still leaves the
+  other side open.
+
+---
+
+## 7. References
 
 **Algorithms**
 
