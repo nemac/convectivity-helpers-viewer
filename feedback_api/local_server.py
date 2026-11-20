@@ -636,6 +636,12 @@ def make_server(port, data, trust_forwarded=False, buckets=(DEFAULT_BUCKET,), s3
         os.environ.pop(k, None)
     os.environ["FEEDBACK_DIR"] = _ensure(data)
     os.environ["COUNTER_DIR"] = _ensure(os.path.join(data, "counters"))
+    # No daily limits on this computer unless asked for (the user's rule for
+    # local work, as for the drawing and routes tools): every local request
+    # comes from 127.0.0.1, so the AWS caps would block a day of testing.
+    # The wrong-code lockout stays.
+    for k in ("FEEDBACK_PER_DAY", "FEEDBACK_ALL_PER_DAY", "FEEDBACK_MB_PER_DAY"):
+        os.environ.setdefault(k, "1000000")
     CONFIG.update(data=data, buckets=list(buckets) or [DEFAULT_BUCKET], trust_forwarded=trust_forwarded,
                   s3_factory=s3_factory)
     srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
