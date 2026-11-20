@@ -14,14 +14,14 @@ popup show a switch with two choices:
 - **This computer** sends the work to the copy running on your computer. It
   costs nothing and has no daily limits.
 - **AWS (live)** sends the work to the real tools online. AWS uses the real
-  daily limits, the same ones everyone shares, so each drawn area and each
-  route click there counts against today's total.
+  daily limits, the same ones everyone shares, so each drawn hazard and each
+  route request there counts against today's total.
 
 The choice is one setting for both tools, and this browser remembers it.
 When the copy on your computer is not running, "This computer" is grayed out
 and the work goes to AWS.
 
-Areas and routes you saved stay in your lists when you switch. An area drawn
+Hazards and routes you saved stay in your lists when you switch. A hazard drawn
 on one choice cannot be opened on the other: switch back to open it.
 
 The switch shows only on your own computer. The published map always uses

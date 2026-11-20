@@ -9,7 +9,7 @@ import {
   ShareIconButton, ShareNote, areaLine, areaLink, useShareNote,
 } from "./OnDemand";
 import {
-  ApiError, DrawCheck, fiApi, FiLimits, RUN_CUTOFF, RunPosted, RunStatus, SavedArea, api, checkShape,
+  ApiError, DrawCheck, fiApi, FiLimits, RUN_CUTOFF, RunPosted, RunStatus, SavedArea, api, checkShape, finishWhy,
   expiryWords, loadAreas, rememberCode, runHazard, saveAreas, unexpired,
   ONDEMAND_LIVE, ROUTES_CHANGED, routesApi, ROUTE_ID, TARGET_SWITCHABLE, useApiTarget, SavedRoute, SharedRoutes, loadRoutes, newSavedRoute, saveRoutes,
   shareLink, sharedRoute, unexpiredRoutes,
@@ -20,6 +20,7 @@ import SchoolIcon from "@mui/icons-material/School";
 import LocalGroceryStoreIcon from "@mui/icons-material/LocalGroceryStore";
 import PublicIcon from "@mui/icons-material/Public";
 import CheckIcon from "@mui/icons-material/Check";
+import CloseIcon from "@mui/icons-material/Close";
 import LayersIcon from "@mui/icons-material/Layers";
 import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
 import KeyboardArrowUpIcon from "@mui/icons-material/KeyboardArrowUp";
@@ -105,7 +106,20 @@ const PICKER_SX = {
   bgcolor: BULLDOG_BLUE, color: "#fff",
   "& fieldset, &:hover fieldset, &.Mui-focused fieldset": { borderColor: BULLDOG_BLUE },
   "& .MuiSvgIcon-root": { color: "#fff" },
+  // A ring outside the solid blue picker when it has keyboard focus: the
+  // field itself looked the same focused or not.
+  "& .MuiSelect-select:focus-visible": { outline: "none" },
+  "&:has(.MuiSelect-select:focus-visible)": { outline: `2px solid ${BULLDOG_BLUE}`, outlineOffset: 2 },
 };
+
+// Overture's release name ("2026-10-21.0") as a reader would say it
+// ("October 2026"), so no version code shows on screen.
+function releaseWords(release: string): string {
+  const m = /^(\d{4})-(\d{2})/.exec(release);
+  if (!m) return release;
+  const month = new Date(Number(m[1]), Number(m[2]) - 1, 1).toLocaleString("en-US", { month: "long" });
+  return `${month} ${m[1]}`;
+}
 
 export default function App() {
   const [tab, setTab] = useState<TabId>(() => {
@@ -190,9 +204,7 @@ export default function App() {
         bgcolor: "transparent", color: "#57606a", cursor: "pointer", display: "flex",
         alignItems: "center", justifyContent: "center", "&:hover": { bgcolor: "#eef1f5", color: NIGHT_SKY },
       }}>
-      <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
-        <path d="M2 2 L12 12 M12 2 L2 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-      </svg>
+      <CloseIcon aria-hidden="true" sx={{ fontSize: 18 }} />
     </Box>
   );
   // Bumped to move the map on demand. Picking the county you are already on
@@ -209,6 +221,9 @@ export default function App() {
   });
   const setAreas = (f: (a: SavedArea[]) => SavedArea[]) =>
     setAreasState((cur) => { const next = f(cur); saveAreas(next); return next; });
+  // the list as it is now, for handlers that outlive a render (the polling)
+  const areasNow = useRef(areas);
+  areasNow.current = areas;
   // The drawn area being shown, from the list or a link (run=<id> in the
   // hash); its latest status from the server; and, once read, its results.
   // A build without the tools (ONDEMAND_LIVE false) ignores run= in a link
@@ -315,7 +330,11 @@ export default function App() {
   targetNow.current = apiTarget;
   const openSetup = import.meta.env.DEV
     ? () => setDoc({ file: "local-setup.md", label: "Running the tools on this computer" }) : undefined;
-  const [notice, setNotice] = useState<{ text: string; action?: { label: string; run: () => void } } | null>(null);
+  // A short message on the map. `shape`, when given, is the drawn hazard it
+  // is about: the message sits beside its outline (see `note` in MapView).
+  const [notice, setNotice] = useState<{
+    text: string; action?: { label: string; run: () => void }; shape?: [number, number][] | null;
+  } | null>(null);
   const [now, setNow] = useState(() => Date.now());
 
   // The guide on screen, if any: which road, which step, and that road's
@@ -354,6 +373,18 @@ export default function App() {
     setGuide(null);
     setFocus(null);
   };
+
+  // Escape closes the guide, wherever it is (a dialog or menu open over it
+  // takes Escape for itself first).
+  const endGuideNow = useRef(endGuide);
+  endGuideNow.current = endGuide;
+  const guideOpen = guide != null;
+  React.useEffect(() => {
+    if (!guideOpen) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape" && !e.defaultPrevented) endGuideNow.current(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [guideOpen]);
 
   React.useEffect(() => {
     if (guide || launcher !== "pill") return;
@@ -396,9 +427,15 @@ export default function App() {
   const cutOffStyle = classes.find((c) => c.value === CUT_OFF_CLASS);
   const countyObj = COUNTIES.find((c) => c.id === county)!;
   const pubHazard = HAZARDS.find((h) => h.id === hazardId) ?? null;
-  // The drawn area's results once read, shaped like a published hazard.
+  // The drawn hazard's results once read, shaped like a published hazard.
   const runReady = runOn && runView?.id === runId ? runView : null;
-  const hazard = runReady ? runReady.hazard : pubHazard;
+  // The drawn hazard on show, when it is one of this browser's own. One
+  // opened from someone else's link is not, and is called "Shared hazard".
+  const runArea = areas.find((a) => a.run_id === runId);
+  const runShared = runOn && !runArea;
+  const readyHazard = useMemo(
+    () => (runReady ? { ...runReady.hazard, shared: runShared } : null), [runReady, runShared]);
+  const hazard = readyHazard ?? pubHazard;
   // The drive times this hazard's run has. A run made before 30 minutes was
   // added has only 5, 10 and 15, and the slider offers only those; a link or
   // a switch landing on a drive time the run lacks falls back to 15.
@@ -525,7 +562,7 @@ export default function App() {
       flyNext.current = true;
     } catch {
       if (activeRun.current === st.run_id) {
-        setNotice({ text: "The results for this area could not be read. Try picking it again." });
+        setNotice({ text: "The results for this hazard could not be read. Try picking it again." });
       }
     }
   };
@@ -539,7 +576,10 @@ export default function App() {
       setRunStatus(st);
       if (st.status === "done") loadResults(st);
     } else if (fromPoll && st.status === "done") {
-      setNotice({ text: `Your area "${st.name}" is ready.`, action: { label: "Show it", run: () => pickRun(st.run_id) } });
+      setNotice({
+        text: `Your hazard "${st.name}" is ready.`, action: { label: "Show it", run: () => pickRun(st.run_id) },
+        shape: areasNow.current.find((a) => a.run_id === st.run_id)?.geometry ?? null,
+      });
     }
   };
   const onRunGone = (id: string) => {
@@ -548,8 +588,9 @@ export default function App() {
     setAreas((list) => list.filter((a) => a.run_id !== id
       || (TARGET_SWITCHABLE && a.target !== targetNow.current)));
     if (id === activeRun.current) {
+      const shape = areasNow.current.find((a) => a.run_id === id)?.geometry ?? null;
       setRunId(null);
-      setNotice({ text: "This area has expired or was never saved, so the map is back on a published hazard." });
+      setNotice({ text: "This hazard has expired or was never saved, so the map is back on a published hazard.", shape });
     }
   };
   // The X beside one of the reader's own areas (in "Your areas" or the hazard
@@ -557,12 +598,16 @@ export default function App() {
   // cleared, and the map goes back to the published hazard picked. The
   // published hazards themselves have no X and are never removed.
   const removeArea = (id: string) => {
+    const gone = areas.find((a) => a.run_id === id);
     setAreas((list) => list.filter((a) => a.run_id !== id));
     setNotice(null);
     setHazardMenu(false);
     if (id === activeRun.current) {
       setRunId(null);
       setFlyNonce((n) => n + 1);
+      // said in a short message, since the map changes under the reader
+      const back = HAZARDS.find((h) => h.id === hazardId)?.label;
+      setNotice({ text: `Removed your hazard "${gone?.name ?? runName}".${back ? ` The map is back on ${back}.` : ""}` });
     }
   };
   // The hazard list's menu, held here so removing the area shown in it can
@@ -582,7 +627,7 @@ export default function App() {
       .catch((e) => {
         if (!live) return;
         if (e instanceof ApiError && e.status === 404) onRunGone(runId);
-        else setNotice({ text: e instanceof ApiError ? e.message : "The drawing tool could not be reached." });
+        else setNotice({ text: e instanceof ApiError ? e.message : "This hazard could not be loaded just now. Try picking it again." });
       });
     return () => { live = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -676,7 +721,6 @@ export default function App() {
   };
   // The outline in the drawing color: the area just drawn, while it is
   // named and run.
-  const runArea = areas.find((a) => a.run_id === runId);
   const keepShape = naming ? drawn
     : runOn && !runReady ? (runArea?.geometry ?? drawn) : null;
   const runName = runReady?.hazard.label ?? runStatus?.name ?? runArea?.name ?? "loading";
@@ -752,14 +796,69 @@ export default function App() {
   const showStats = onHazard && !guide && !(runOn && !runReady);
   const tilesUrl = runReady ? `run:${runReady.id}` : runPending ? "run:pending" : new URL(
     tab === "pinch" ? PINCH_TILES : onHazard ? hazard.tiles : countyObj.tiles, TILES_BASE).href;
+  // What the map draws. While a drawn hazard is worked out, the last view
+  // on this tab stays on screen, dimmed and answering no hovers or clicks,
+  // until the results arrive (blank only when there was none before, as for
+  // a link opened cold).
+  const liveView = {
+    tilesUrl, field, score,
+    run: runReady?.files ?? (runPending ? PENDING_RUN : null),
+    hazard: onHazard && !runPending ? hazard : null,
+  };
+  const lastView = useRef<typeof liveView | null>(null);
+  if (tab === "isolation" && !runPending) lastView.current = liveView;
+  const dimmed = runPending && lastView.current != null;
+  const shown = dimmed ? lastView.current! : liveView;
   const sourceLayer = tab === "pinch" ? "pinch" : tab === "isolation" ? "roads" : "detour";
   const view = onHazard ? hazardView(hazard) : null;
   const center: [number, number] = tab === "pinch" ? NC_CENTER : view ? view.center : countyObj.center;
   const zoom = tab === "pinch" ? NC_ZOOM : view ? view.zoom : countyObj.zoom;
   const fullBounds = tab === "pinch" ? NC_BOUNDS : onHazard ? hazard.bounds : countyObj.bounds;
   const fullLabel = tab === "pinch" ? "Show the whole state"
-    : onHazard ? `Show everything within ${hazard.bufferMiles} miles of ${runReady ? "your area" : "the hazard"}`
+    : onHazard ? `Show everything within ${hazard.bufferMiles} miles of the hazard`
     : `Show all of ${countyObj.label} County`;
+
+  // The message on the map about a drawn hazard, beside its outline: the
+  // server's own words on its progress while it is worked out, then
+  // "loading", or why it failed; otherwise any other notice.
+  const runLabel = runShared ? `the shared hazard "${runName}"` : `your hazard "${runName}"`;
+  let mapNote: React.ReactNode = null;
+  let noteRing: [number, number][] | null = null;
+  if (!drawing && runOn && runStatus?.status === "running") {
+    mapNote = (
+      <MapBar spinner>
+        <b>Working on {runLabel}.</b> {runStatus.progress}
+        {/^(Waiting|Loading)/.test(runStatus.progress ?? "") ? " Big cities take about 2 minutes." : ""}
+      </MapBar>
+    );
+    noteRing = keepShape;
+  } else if (!drawing && runOn && runStatus?.status === "done" && !runReady) {
+    mapNote = <MapBar spinner>Loading the results for {runLabel}.</MapBar>;
+    noteRing = keepShape;
+  } else if (!drawing && runOn && runStatus?.status === "failed") {
+    mapNote = (
+      <MapBar onClose={() => setRunId(null)}>
+        {runLabel.charAt(0).toUpperCase() + runLabel.slice(1)} could not be worked out. {runStatus.error ?? ""}
+      </MapBar>
+    );
+    noteRing = keepShape;
+  } else if (!drawing && notice && !(runOn && runStatus && runStatus.status !== "done")) {
+    mapNote = (
+      <MapBar onClose={() => setNotice(null)}>
+        {notice.text}
+        {notice.action && (
+          <Box component="button" type="button" onClick={() => { notice.action!.run(); setNotice(null); }} sx={{
+            ml: 1.25, font: "inherit", fontWeight: 700, fontSize: 13, cursor: "pointer", px: 1.25, py: 0.25,
+            borderRadius: 999, border: "1.5px solid #fff", color: "#fff", bgcolor: "transparent",
+            "&:hover": { bgcolor: "rgba(255,255,255,0.15)" },
+          }}>
+            {notice.action.label}
+          </Box>
+        )}
+      </MapBar>
+    );
+    noteRing = notice.shape ?? null;
+  }
 
   // keep the hash in step with the panel
   React.useEffect(() => {
@@ -814,8 +913,8 @@ export default function App() {
       )}
         <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
           {tab === "isolation"
-            ? `Each rank, with the share of the places within a ${cut} minute drive that someone on those roads can no longer get to:`
-            : `${score.label}, ${METHODS.find((m) => m.id === method)?.label.toLowerCase()} breaks.`}
+            ? `Each rank, with the share of the places within a ${cut}-minute drive that someone on those roads can no longer get to:`
+            : "Each color is a rank, from 1 (lowest) to 10 (highest)."}
         </Typography>
         {unranked && hazard && (
           <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
@@ -838,7 +937,8 @@ export default function App() {
         <Stack direction="row" spacing={1.5} alignItems="flex-start">
           <Box sx={{ minWidth: 0 }}>
             {[...ranks].reverse().map((c) => (
-              <LegendRow key={c.value} c={c} on={c.value >= minClass}
+              <LegendRow key={c.value} c={c}
+                on={c.value >= minClass && !(rankRanges && !rankRanges[c.value - 1])}
                 label={rankRanges ? `${c.label}: ${shareRange(rankRanges[c.value - 1])}` : c.label} />
             ))}
           </Box>
@@ -850,6 +950,7 @@ export default function App() {
               valueLabelDisplay="auto"
               valueLabelFormat={(v) => (v === 1 ? "all ranks" : `rank ${v} and up`)}
               aria-label="Lowest rank shown"
+              getAriaValueText={(v) => (v === 1 ? "All ranks shown" : `Ranks ${v} to 10 shown`)}
               sx={{
                 color: BULLDOG_BLUE,
                 height: (ranks.length - 1) * LEGEND_ROW, my: `${LEGEND_ROW / 2}px`,
@@ -890,14 +991,27 @@ export default function App() {
               <Typography variant="caption" sx={{ lineHeight: 1.45 }}>
                 <b>{hazardWords.area.charAt(0).toUpperCase() + hazardWords.area.slice(1)}.</b>{" "}
                 Every road inside it is closed and drawn in dark red, like the roads it cuts off
-                completely. The shaded part of the map lies beyond the{" "}
-                {hazard?.bufferMiles ?? 20} miles around it that this run covers.
+                completely. The shaded part of the map is more than{" "}
+                {hazard?.bufferMiles ?? 30} miles from it and was not looked at.
               </Typography>
             </Stack>
           </Box>
         )}
     </>
   );
+
+  // The "No data here" notices sit in the middle of the part of the map to
+  // the right of the open legend, so they never cover it.
+  const legendShown = guide ? panelTarget === "legend" || panelTarget === "services" : drawing ? false : legendOpen;
+  const emptySx = {
+    position: "absolute", top: "50%", transform: "translate(-50%, -50%)",
+    left: legendShown ? "calc(50% + 161px)" : "50%",
+    width: "max-content", maxWidth: legendShown ? "min(460px, calc(100% - 346px))" : "min(460px, calc(100% - 24px))",
+    boxSizing: "border-box",
+    bgcolor: "#fff", borderRadius: 2, px: 2.5, py: 2, pr: 5,
+    boxShadow: "0 6px 24px rgba(16,24,40,0.18)",
+    border: "1px solid #dfe3e8", zIndex: 5,
+  } as const;
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", height: "100vh" }}>
@@ -908,7 +1022,7 @@ export default function App() {
           rather than letting the title run into them or the tabs run off the
           right edge. */}
       <Box component="header" sx={{
-        bgcolor: NIGHT_SKY, display: "flex", alignItems: "center", gap: 2.5,
+        bgcolor: NIGHT_SKY, display: "flex", alignItems: "center", gap: 2,
         flexWrap: { xs: "wrap", md: "nowrap" }, rowGap: 1,
         px: 2.5, py: 1.25, flexShrink: 0,
       }}>
@@ -953,12 +1067,14 @@ export default function App() {
           value={tab}
           onChange={(_, v) => { endGuide(); setDrawing(false); setTab(v); }}
           sx={{
-            ml: 1.5, minHeight: 0, flexShrink: 0,
-            "& .MuiTabs-flexContainer": { gap: 1.5 },
+            // gaps kept tight so the bar fits a 1280 px window without
+            // scrolling sideways
+            ml: 0.5, minHeight: 0, flexShrink: 0,
+            "& .MuiTabs-flexContainer": { gap: 1 },
             "& .MuiTabs-indicator": { display: "none" },
             "& .MuiTab-root": {
               textTransform: "none", fontWeight: 600, fontSize: 15,
-              minHeight: 0, minWidth: 0, px: 2, py: 0.75, borderRadius: 999,
+              minHeight: 0, minWidth: 0, px: 1.5, py: 0.75, borderRadius: 999,
               flexDirection: "row", gap: 0.5,
               color: "rgba(255,255,255,0.92)", bgcolor: "rgba(255,255,255,0.1)",
               border: "1.5px solid rgba(255,255,255,0.45)",
@@ -997,11 +1113,12 @@ export default function App() {
         <Box sx={{ flex: 1 }} />
         {/* Set in full white rather than a dim tint: at this size a faded grey
             on navy is the first thing to become unreadable. Shown only where
-            there is room beside the tabs. */}
+            there is room beside the tabs: from 1500 px wide, since below that
+            it was squeezed to a narrow column and pushed the page sideways. */}
         <Typography sx={{
           color: "rgba(255,255,255,0.92)", fontSize: 13.5, fontWeight: 500,
           textAlign: "right", maxWidth: 300, minWidth: 0, lineHeight: 1.4,
-          display: { xs: "none", lg: "block" },
+          display: "none", "@media (min-width: 1500px)": { display: "block" },
         }}>
           {ORG_NAME}
         </Typography>
@@ -1050,7 +1167,7 @@ export default function App() {
 
           {tab !== "pinch" && (
             <Card title="Choose a county" guide="county" lit={panelTarget === "county"}>
-              <Select fullWidth size="small" value={county}
+              <Select fullWidth size="small" value={county} labelId={cardTitleId("county")}
                 onChange={(e) => goToCounty(e.target.value)}
                 sx={PICKER_SX}>
                 {COUNTIES.map((c) => <MenuItem key={c.id} value={c.id}>{c.label}</MenuItem>)}
@@ -1060,12 +1177,13 @@ export default function App() {
 
           {tab === "isolation" && (
             <Card title="Choose a hazard" guide="hazard" lit={panelTarget === "hazard"}>
-              {/* A drawn area on show is the selected entry, "Your area: ...";
+              {/* A drawn hazard on show is the selected entry, "Your hazard: ..." (or "Shared hazard: ..." from someone else's link);
                   picking a published hazard goes back to it. Only the
                   reader's own area (one in this browser's list) has the
                   remove X; the published hazards never do. The closed field
                   shows the name alone, without the X. */}
               <Select fullWidth size="small" value={runOn ? "__run" : hazardId} sx={PICKER_SX}
+                labelId={cardTitleId("hazard")}
                 open={hazardMenu} onOpen={() => setHazardMenu(true)} onClose={() => setHazardMenu(false)}
                 onChange={(e) => {
                   const v = String(e.target.value);
@@ -1073,15 +1191,15 @@ export default function App() {
                   if (v.startsWith("run:")) { setHazardMenu(false); pickRun(v.slice(4)); return; }
                   goToHazard(v);
                 }}
-                renderValue={(v) => (v === "__run" ? `Your area: ${runName}`
+                renderValue={(v) => (v === "__run" ? `${runShared ? "Shared hazard" : "Your hazard"}: ${runName}`
                   : hazardsIn(county).find((h) => h.id === v)?.label ?? v)}>
                 {/* Every area drawn in this browser, not only the one on
                     show, each with its expiry date and an X (the user found
                     them "lost" when only the shown one was listed). */}
                 {runOn && !runArea && (
-                  <MenuItem value="__run">Your area: {runName}</MenuItem>
+                  <MenuItem value="__run">Shared hazard: {runName}</MenuItem>
                 )}
-                {areas.length > 0 && <ListSubheader sx={{ lineHeight: "32px" }}>Your areas</ListSubheader>}
+                {areas.length > 0 && <ListSubheader sx={{ lineHeight: "32px" }}>Your hazards</ListSubheader>}
                 {[...areas].sort((x, y) => Date.parse(y.created_at) - Date.parse(x.created_at)).map((a) => {
                   // the same row as in "Your areas" and "Your routes": a
                   // check and a bold name on the one on the map, the name,
@@ -1136,7 +1254,7 @@ export default function App() {
           {tab === "isolation" && runOn && (
             <Card title="Drive time" guide="score" lit={panelTarget === "score"}>
               <Typography variant="body2">
-                10 minutes. Drawn areas are worked out for a 10 minute drive only.
+                10 minutes. Drawn hazards are worked out for a 10-minute drive only.
               </Typography>
             </Card>
           )}
@@ -1154,7 +1272,15 @@ export default function App() {
                   }}
                   aria-label="Drive time in minutes"
                   getAriaValueText={(v) => `${slidable[v]?.minutes} minutes`}
-                  sx={{ color: BULLDOG_BLUE, "& .MuiSlider-markLabel": { fontSize: 13 } }} />
+                  sx={{
+                    color: BULLDOG_BLUE, "& .MuiSlider-markLabel": { fontSize: 13 },
+                    // the end labels sit inside the card: the first starts at
+                    // its mark and the last ends at its mark
+                    "& .MuiSlider-markLabel[data-index='0']": { transform: "translateX(-4px)" },
+                    [`& .MuiSlider-markLabel[data-index='${slidable.length - 1}']`]: {
+                      transform: "translateX(calc(-100% + 4px))",
+                    },
+                  }} />
               </Box>
             </Card>
           )}
@@ -1162,7 +1288,7 @@ export default function App() {
           {tab === "detour" && (
             <Card title="Choose what the map shows" guide="score" lit={panelTarget === "score"}>
               <FormControl fullWidth>
-                <Select size="small" value={detourScore} sx={PICKER_SX}
+                <Select size="small" value={detourScore} sx={PICKER_SX} labelId={cardTitleId("score")}
                   onChange={(e) => { panelChanged(); setDetourScore(e.target.value); }}>
                   {DETOUR_SCORES.map((s) => <MenuItem key={s.base} value={s.base}>{s.label}</MenuItem>)}
                 </Select>
@@ -1171,11 +1297,11 @@ export default function App() {
           )}
 
 
-          <Card title="Classification" guide="classes" lit={panelTarget === "classes"}>
-            <RadioGroup value={method}
+          <Card title="How roads are sorted into colors" guide="classes" lit={panelTarget === "classes"}>
+            <RadioGroup value={method} aria-labelledby={cardTitleId("classes")}
               onChange={(e) => { panelChanged(); setMethod(e.target.value as MethodId); }}>
               {METHODS.map((m) => (
-                <Tooltip key={m.id} title={m.help} placement="right" arrow>
+                <Tooltip key={m.id} title={m.help} placement="right" arrow describeChild>
                   <FormControlLabel value={m.id} control={<Radio size="small" sx={{ alignSelf: "flex-start", pt: 0.5 }} />}
                     sx={{ alignItems: "flex-start", mb: 0.5 }}
                     label={
@@ -1187,9 +1313,6 @@ export default function App() {
                 </Tooltip>
               ))}
             </RadioGroup>
-            <Typography variant="caption" color="text.secondary">
-              Column: <code>{field}</code>
-            </Typography>
           </Card>
 
 
@@ -1202,12 +1325,22 @@ export default function App() {
               production build unless VITE_ONDEMAND_LIVE=1 (ONDEMAND_LIVE). */}
           {tab === "isolation" && ONDEMAND_LIVE && (
             <DrawCard drawing={drawing} limits={limits} limitsFailed={limitsFailed}
-              onStart={startDrawing} onCancel={stopDrawing} onSetup={openSetup} />
+              onStart={startDrawing} onCancel={stopDrawing} onSetup={openSetup} lit={panelTarget === "draw"} />
           )}
           {tab === "isolation" && ONDEMAND_LIVE && (
             <AreasCard areas={areas} activeId={runOn ? runId : null} now={now} onPick={pickRun} onRemove={removeArea} />
           )}
-          {/* The routes saved from road popups, just above Methodology. */}
+          {/* Where to find the alternate routes, which live in a road's
+              popup, and below it the routes saved from road popups, just
+              above Methodology. */}
+          {tab === "pinch" && ONDEMAND_LIVE && (
+            <Card title="Alternate routes" guide="routes" lit={panelTarget === "routes"}>
+              <Typography variant="body2" sx={{ lineHeight: 1.5 }}>
+                Click any road, then "Get alternate and truck-safe routes" in its popup, to see up
+                to three alternate routes for when that road is closed.
+              </Typography>
+            </Card>
+          )}
           {tab === "pinch" && ONDEMAND_LIVE && (
             <RoutesCard routes={savedRoutes} shownId={shownRoute} now={now} onPick={pickSavedRoute}
               onRemove={removeSavedRoute} />
@@ -1225,7 +1358,7 @@ export default function App() {
                 ))}
               </Stack>
               <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
-                The technical note from the repository, rendered here.
+                How these numbers were worked out, in detail.
               </Typography>
             </Card>
           )}
@@ -1249,10 +1382,9 @@ export default function App() {
           {/* Double-clicking this line is a hidden reset: see resetRemembered. */}
           <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 2 }}
             onDoubleClick={resetRemembered}>
-            Symbology from {STYLES[field]?.source ?? "the QGIS styles"} in output/.
             {onHazard && hazard.overtureRelease
-              ? ` Roads and buildings: Overture Maps Foundation, release ${hazard.overtureRelease}.`
-              : " Roads: Overture Maps Foundation."}
+              ? `Roads and buildings from Overture Maps, ${releaseWords(hazard.overtureRelease)}.`
+              : "Roads from Overture Maps."}
           </Typography>
         </Box>
       </Drawer>
@@ -1265,10 +1397,10 @@ export default function App() {
         <MapBoundary>
           <MapView
             onEmptyChange={setMapEmpty}
-            tilesUrl={tilesUrl}
+            tilesUrl={shown.tilesUrl}
             sourceLayer={sourceLayer}
-            classField={field}
-            score={score}
+            classField={shown.field}
+            score={shown.score}
             basemap={basemap}
             opacity={opacity}
             minClass={minClass}
@@ -1280,7 +1412,7 @@ export default function App() {
             countyKey={county}
             fullBounds={fullBounds}
             fullLabel={fullLabel}
-            hazard={onHazard && !runPending ? hazard : null}
+            hazard={shown.hazard}
             buildingsUrl={buildings && overtureRelease ? overtureBuildingsUrl(overtureRelease) : null}
             services={tab === "detour" ? services : null}
             hazardBuildings={hazardBldgs}
@@ -1303,7 +1435,10 @@ export default function App() {
             ) : null}
             onGuideAway={onGuideAway}
             onGuideClosed={endGuide}
-            run={runReady?.files ?? (runPending ? PENDING_RUN : null)}
+            run={shown.run}
+            dimmed={dimmed}
+            note={mapNote}
+            noteRing={noteRing}
             drawing={drawing}
             onDraw={onDraw}
             onDrawFinish={finishDrawing}
@@ -1339,14 +1474,17 @@ export default function App() {
             style={{ ["--guide-room" as string]: `${coach.room}px` }}
             sx={{
             position: "absolute", left: coach.left, top: coach.top, zIndex: 6,
-            bgcolor: NIGHT_SKY, color: "#fff", borderRadius: "12px", p: "14px 16px 12px",
+            // the same 2 px white rim as the hazard's popup, so it holds up
+            // on the dark basemaps and the imagery
+            bgcolor: NIGHT_SKY, color: "#fff", borderRadius: "12px", p: "14px 16px 12px", border: "2px solid #fff",
             boxShadow: "0 12px 32px rgba(0,20,45,0.38)", transition: "top 250ms ease",
           }}>
             {coach.arrow != null && (
               <Box aria-hidden="true" sx={{
-                position: "absolute", left: -10, top: coach.arrow - 10, width: 0, height: 0,
+                // white, joined to the white rim, as the hazard popup's tip is
+                position: "absolute", left: -12, top: coach.arrow - 10, width: 0, height: 0,
                 borderTop: "10px solid transparent", borderBottom: "10px solid transparent",
-                borderRight: `10px solid ${NIGHT_SKY}`, transition: "top 250ms ease",
+                borderRight: "10px solid #fff", transition: "top 250ms ease",
               }} />
             )}
             <MapGuide ex={guide.ex} step={guide.step} steps={steps}
@@ -1360,34 +1498,9 @@ export default function App() {
           <DrawHint check={refusal && drawCheck ? { ...drawCheck, problem: refusal } : drawCheck}
             corners={Math.max(corners, refusal ? 3 : 0)}
             canFinish={checkShape(cornersRef.current).problem == null}
+            finishWhy={finishWhy(checkShape(cornersRef.current))}
             onFinish={() => finishDrawing(cornersRef.current)} onCancel={stopDrawing}
             anchor={corners > 0 ? lastCornerPx : null} />
-        )}
-        {/* A drawn area on its way: the server's own words on its progress. */}
-        {!drawing && runOn && runStatus?.status === "running" && (
-          <MapBar spinner>{runStatus.progress} Big cities take about 2 minutes.</MapBar>
-        )}
-        {!drawing && runOn && runStatus?.status === "done" && !runReady && (
-          <MapBar spinner>Loading the results for {runStatus.name}.</MapBar>
-        )}
-        {!drawing && runOn && runStatus?.status === "failed" && (
-          <MapBar onClose={() => setRunId(null)}>
-            "{runStatus.name}" could not be worked out. {runStatus.error ?? ""}
-          </MapBar>
-        )}
-        {!drawing && notice && !(runOn && runStatus && runStatus.status !== "done") && (
-          <MapBar onClose={() => setNotice(null)}>
-            {notice.text}
-            {notice.action && (
-              <Box component="button" type="button" onClick={() => { notice.action!.run(); setNotice(null); }} sx={{
-                ml: 1.25, font: "inherit", fontWeight: 700, fontSize: 13, cursor: "pointer", px: 1.25, py: 0.25,
-                borderRadius: 999, border: "1.5px solid #fff", color: "#fff", bgcolor: "transparent",
-                "&:hover": { bgcolor: "rgba(255,255,255,0.15)" },
-              }}>
-                {notice.action.label}
-              </Box>
-            )}
-          </MapBar>
         )}
 
         {!guide && (
@@ -1405,7 +1518,7 @@ export default function App() {
             position: "absolute", bottom: launcher === "pill" ? 34 + LAUNCHER_SIZE + 12 : 34,
             left: launcher === "pill" ? "50%" : `calc(50% + ${(12 + LAUNCHER_SIZE) / 2}px)`,
             transform: "translateX(-50%)", transition: "bottom 400ms, left 400ms",
-            bgcolor: "rgba(16,23,31,0.86)", color: "#fff", borderRadius: 999,
+            bgcolor: "rgba(16,23,31,0.86)", color: "#fff", borderRadius: 999, border: "2px solid #fff",
             px: 2, py: 0.9, fontSize: 13.5, fontWeight: 500, zIndex: 4,
             pointerEvents: "none", whiteSpace: "nowrap",
             maxWidth: launcher === "pill"
@@ -1423,19 +1536,14 @@ export default function App() {
         {/* The same on the functional isolation tab, where each hazard's run
             covers only the area around it. */}
         {onHazard && mapEmpty && !emptyClosed && !drawing && !runPending && (
-          <Box sx={{
-            position: "absolute", top: "50%", left: "50%", transform: "translate(-50%, -50%)",
-            bgcolor: "#fff", borderRadius: 2, px: 2.5, py: 2, pr: 5, maxWidth: 460,
-            boxShadow: "0 6px 24px rgba(16,24,40,0.18)",
-            border: "1px solid #dfe3e8", zIndex: 5,
-          }}>
+          <Box sx={emptySx}>
             {closeEmpty}
             <Typography sx={{ fontWeight: 700, fontSize: 14.5, mb: 0.5 }}>
-              No data for this hazard here
+              Nothing to show here
             </Typography>
             <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
               {runReady
-                ? `Your area covers the roads within ${hazard.bufferMiles} miles of it. This one is "${hazard.label}".`
+                ? `Results for "${hazard.label}" cover the roads within ${hazard.bufferMiles} miles of it.`
                 : `Each hazard covers the roads within ${hazard.bufferMiles} miles of it. This one `
                   + `is ${hazard.label.charAt(0).toLowerCase() + hazard.label.slice(1)}.`}
             </Typography>
@@ -1452,12 +1560,7 @@ export default function App() {
         )}
 
         {tab === "detour" && mapEmpty && !emptyClosed && (
-          <Box sx={{
-            position: "absolute", top: "50%", left: "50%", transform: "translate(-50%, -50%)",
-            bgcolor: "#fff", borderRadius: 2, px: 2.5, py: 2, pr: 5, maxWidth: 460,
-            boxShadow: "0 6px 24px rgba(16,24,40,0.18)",
-            border: "1px solid #dfe3e8", zIndex: 5,
-          }}>
+          <Box sx={emptySx}>
             {closeEmpty}
             <Typography sx={{ fontWeight: 700, fontSize: 14.5, mb: 0.5 }}>
               No access to services data here
@@ -1493,25 +1596,26 @@ export default function App() {
           <Stack direction="row" spacing={1} alignItems="stretch" flexWrap="wrap" useFlexGap>
             <Stat value={hazard.isolatedBuildings} label="buildings cut off" />
             <Stat value={hazard.hazardBuildings} label={`buildings ${hazardWords.inside}`} />
-            <Stat value={hazard.isolatedRoads} label="road segments cut off" />
-            <Stat value={hazard.closedRoads} label="road segments closed" />
+            <Stat value={hazard.isolatedRoads} label="roads cut off" />
+            <Stat value={hazard.closedRoads} label="roads closed" />
             <Stat value={`${feet(hazard.isolatedRoadM + hazard.closedRoadM)} ft`}
-              label={`of road: ${feet(hazard.isolatedRoadM)} ft cut off, ${feet(hazard.closedRoadM)} ft closed`} />
+              label={`of road cut off or closed (${feet(hazard.isolatedRoadM)} ft cut off, `
+                + `${feet(hazard.closedRoadM)} ft closed)`} />
             {/* A drawn area's results: a link that opens them for anyone,
                 with no new run, until they expire. */}
             {runReady && ONDEMAND_LIVE && (
               <Box sx={{ ml: "auto", alignSelf: "center" }}>
-                <ShareButton label="Share this area"
+                <ShareButton label="Share this hazard"
                   link={() => shareLink({ tab: "isolation", run: runReady.id }, true)} />
               </Box>
             )}
           </Stack>
           <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5, lineHeight: 1.3 }}>
             {runReady
-              ? "Counted by the analysis for your area, within 12 miles of it. Buildings and roads: Overture Maps Foundation"
-                + (hazard.overtureRelease ? `, release ${hazard.overtureRelease}.` : ".")
-              : `Counted by the analysis for this hazard. Buildings and roads: Overture Maps Foundation, `
-                + `release ${hazard.overtureRelease}.`}
+              ? "Counted for the drawn hazard, within 12 miles of it. Buildings and roads from Overture Maps"
+                + (hazard.overtureRelease ? `, ${releaseWords(hazard.overtureRelease)}.` : ".")
+              : `Counted for this hazard. Buildings and roads from Overture Maps, `
+                + `${releaseWords(hazard.overtureRelease)}.`}
           </Typography>
         </Box>
       )}
@@ -1607,21 +1711,16 @@ function MapGuide({ ex, step, steps, color, nudged, onStep, onEnd }: {
         }}>
           Quick guide, step {step + 1} of {steps.length}
         </Typography>
-        {/* an X drawn as an SVG, since Figtree has no glyph for it */}
+        {/* the same X icon as every other close button */}
         <Box component="button" type="button" onClick={onEnd} aria-label="Close the guide"
           title="Close the guide"
           sx={{
             width: 28, height: 28, mr: -0.75, p: 0, border: "none", borderRadius: 999,
-            bgcolor: "transparent", cursor: "pointer", display: "flex",
+            bgcolor: "transparent", cursor: "pointer", display: "flex", color: "#fff",
             alignItems: "center", justifyContent: "center",
             "&:hover": { bgcolor: "rgba(255,255,255,0.15)" },
           }}>
-          <Box component="svg" viewBox="0 0 24 24" aria-hidden="true" sx={{
-            width: 18, height: 18, fill: "none", stroke: "#fff",
-            strokeWidth: 2.4, strokeLinecap: "round",
-          }}>
-            <path d="M6 6l12 12M18 6L6 18" />
-          </Box>
+          <CloseIcon aria-hidden="true" sx={{ fontSize: 18 }} />
         </Box>
       </Stack>
 
@@ -1860,6 +1959,8 @@ function ServiceIcon({ kind }: { kind: ServiceKind }) {
   );
 }
 
+const cardTitleId = (guide: PanelTarget) => `card-title-${guide}`;
+
 // a left-panel section, boxed like the landslide viewer's
 //
 // `guide` names the card for the guide to point at, and `lit` marks it as the
@@ -1886,7 +1987,8 @@ function Card({ title, guide, lit, children }: {
         "@media (prefers-reduced-motion: reduce)": { animation: "none" },
       }),
     }}>
-      {title && <Typography variant="subtitle2" gutterBottom>{title}</Typography>}
+      {/* its id names the picker in the card for screen readers (cardTitleId) */}
+      {title && <Typography variant="subtitle2" gutterBottom id={guide ? cardTitleId(guide) : undefined}>{title}</Typography>}
       {children}
     </Box>
   );

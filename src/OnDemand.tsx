@@ -1,5 +1,5 @@
 // The pieces of the two on-demand tools that the page draws: on Functional
-// isolation the "Draw a hazard" card, the "Your areas" list, the naming
+// isolation the "Draw a hazard" card, the "Your hazards" list, the naming
 // dialog and the messages on the map while drawing and running; on Pinch
 // points the alternate routes tool inside a clicked road's popup. The
 // approved mockups are the spec for all of it. No orange and no red anywhere:
@@ -20,11 +20,25 @@ import { BULLDOG_BLUE, NIGHT_SKY } from "./brand";
 import { splitNames } from "./config";
 import type { RouteBoxCtx } from "./MapView";
 import {
-  ApiError, ApiTarget, DrawCheck, FiLimits, MAX_ACROSS_MI, MAX_SQ_MI, ROUTE_COLORS, ROUTE_INKS, ROUTE_KEEP_DAYS,
-  RouteLimits, RouteResult, SavedArea, SavedRoute, TARGET_SWITCHABLE, api, checkLocal, copyText, downloadText,
+  ApiError, ApiTarget, CODE_REMEMBERED, CodeNeeded, DrawCheck, FiLimits, MAX_ACROSS_MI, MAX_SQ_MI, ROUTE_COLORS,
+  ROUTE_INKS, ROUTE_KEEP_DAYS, RouteLimits, RouteResult, SavedArea, SavedRoute, TARGET_SWITCHABLE, TOO_BIG, api,
+  checkLocal, copyText, downloadText,
   fileSlug, forgetCode, hasRememberedCode, expiryWords, rememberCode, rememberedCode, routesApi, routesCsv, shareIdFor,
   setApiTarget, shareLink, timeLeft, useApiTarget,
 } from "./ondemandApi";
+
+// Hidden on screen but read out by screen readers.
+export const VISUALLY_HIDDEN = {
+  position: "absolute", width: 1, height: 1, p: 0, m: "-1px", overflow: "hidden",
+  clip: "rect(0 0 0 0)", whiteSpace: "nowrap", border: 0,
+} as const;
+
+// An error from one of the tools, in the same pale yellow box as the
+// one-route warning (never orange or red).
+export const ERROR_BOX_SX = {
+  px: 1.25, py: 0.75, borderRadius: 1.5, bgcolor: "#fff1c7", color: "#6b4b00",
+  fontSize: 13, fontWeight: 700, lineHeight: 1.4,
+} as const;
 
 // ------------------------------------------------------------ where the work goes
 
@@ -45,7 +59,7 @@ export function TargetSwitch({ onSetup }: { onSetup?: () => void }) {
           computer, on is AWS. With no local copy running it stays on AWS
           and cannot be moved. */}
       <Stack direction="row" alignItems="center" spacing={0.5}>
-        <Typography component="span" sx={{ fontSize: 12.5, fontWeight: target === "local" ? 800 : 500,
+        <Typography component="span" sx={{ fontSize: 13, fontWeight: target === "local" ? 800 : 500,
           color: localUp === false ? "#9aa3ad" : NIGHT_SKY }}>This computer</Typography>
         <Switch checked={target === "aws"} disabled={localUp === false}
           onChange={(e) => setApiTarget(e.target.checked ? "aws" : "local")}
@@ -54,7 +68,7 @@ export function TargetSwitch({ onSetup }: { onSetup?: () => void }) {
             "& .MuiSwitch-switchBase.Mui-checked": { color: NIGHT_SKY },
             "& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track": { bgcolor: BULLDOG_BLUE, opacity: 0.6 },
           }} />
-        <Typography component="span" sx={{ fontSize: 12.5, fontWeight: target === "aws" ? 800 : 500, color: NIGHT_SKY }}>
+        <Typography component="span" sx={{ fontSize: 13, fontWeight: target === "aws" ? 800 : 500, color: NIGHT_SKY }}>
           AWS (live)
         </Typography>
       </Stack>
@@ -83,8 +97,23 @@ const TIP_OVER = "#d9b8ff";
 
 // -------------------------------------------------------- Functional isolation
 
-export function DrawCard({ drawing, limits, limitsFailed, onStart, onCancel, onSetup }: {
+// The guide's pulsing Bulldog Blue outline, as on the panel's other cards
+// (Card in App.tsx).
+export const litSx = (lit?: boolean) => (lit ? {
+  borderColor: BULLDOG_BLUE,
+  boxShadow: `0 0 0 3px ${BULLDOG_BLUE}`,
+  animation: "guidePulse 1.8s ease-in-out infinite",
+  "@keyframes guidePulse": {
+    "0%, 100%": { boxShadow: `0 0 0 3px ${BULLDOG_BLUE}, 0 0 0 3px rgba(0,61,165,0.25)` },
+    "50%": { boxShadow: `0 0 0 3px ${BULLDOG_BLUE}, 0 0 0 10px rgba(0,61,165,0.12)` },
+  },
+  "@media (prefers-reduced-motion: reduce)": { animation: "none" },
+} : {});
+
+export function DrawCard({ drawing, limits, limitsFailed, onStart, onCancel, onSetup, lit = false }: {
   drawing: boolean; limits: FiLimits | null; limitsFailed: boolean;
+  // the guide is pointing at this card
+  lit?: boolean;
   onStart: () => void; onCancel: () => void;
   // opens the note on running the tools on this computer (dev server only)
   onSetup?: () => void;
@@ -92,8 +121,9 @@ export function DrawCard({ drawing, limits, limitsFailed, onStart, onCancel, onS
   const off = limits?.turned_off === true;
   const none = limits != null && (off || limits.runs_left <= 0);
   return (
-    <Box sx={{
+    <Box data-guide="draw" sx={{
       border: `2px solid ${DRAW_BUTTON}`, borderRadius: 1.5, px: 2, py: 1.5, bgcolor: "#fff", mt: 2,
+      ...litSx(lit),
     }}>
       {drawing ? (
         <Button fullWidth onClick={onCancel} sx={{
@@ -113,19 +143,20 @@ export function DrawCard({ drawing, limits, limitsFailed, onStart, onCancel, onS
       )}
       <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1, lineHeight: 1.45, fontSize: 12.5 }}>
         {drawing
-          ? "Click each corner of the area. Double-click to finish. Press Backspace to undo a corner."
-          : "Draw any area in North Carolina. See which roads it cuts off within a 10 minute drive."}
+          ? "Click each corner of the hazard. Double-click to finish. Press Backspace to undo a corner."
+          : `Draw a flood, a closure or any other hazard in North Carolina, up to ${MAX_SQ_MI} square miles. `
+            + "See which roads it cuts off within a 10-minute drive."}
       </Typography>
       {!drawing && limits && (
         <Typography sx={{ mt: 0.75, fontSize: 12.5, fontWeight: 700, color: DRAW_INK }}>
-          {off ? "The drawing tool is turned off for now."
-            : none ? "No runs left today. More are available tomorrow."
-            : `${limits.runs_left.toLocaleString()} of ${limits.runs_limit.toLocaleString()} runs left today`}
+          {off ? (limits.cap_reached ? "Drawing is turned off until next month." : "Drawing is turned off for now.")
+            : none ? "No more hazards can be drawn today. More are available after midnight, Eastern time."
+            : `${limits.runs_left.toLocaleString()} of ${limits.runs_limit.toLocaleString()} hazards left to draw today`}
         </Typography>
       )}
       {!drawing && !limits && limitsFailed && (
         <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.75 }}>
-          The drawing tool could not be reached just now.
+          Drawing a hazard is not available just now. Try again later.
         </Typography>
       )}
       {!drawing && TARGET_SWITCHABLE && <TargetSwitch onSetup={onSetup} />}
@@ -180,19 +211,61 @@ const OUTLINE_SX = {
   textTransform: "none", fontWeight: 700, color: BULLDOG_BLUE, borderColor: BULLDOG_BLUE, bgcolor: "#fff",
   "&:hover": { borderColor: NIGHT_SKY, bgcolor: "#eef2f9" },
 } as const;
+// A small box asking for the access code, for sharing a set of routes saved
+// before the server kept routes: making its link asks for the routes once
+// more, which takes the code. The published site remembers no code, so it is
+// asked for here, in that step.
+function CodeAsk({ onSubmit, onCancel, sx }: {
+  onSubmit: (code: string) => void; onCancel: () => void; sx?: object;
+}) {
+  const [code, setCode] = useState("");
+  return (
+    <Box component="form" role="dialog" aria-label="Access code to make the link"
+      onSubmit={(e: React.FormEvent) => { e.preventDefault(); if (code.trim()) onSubmit(code.trim()); }}
+      sx={{ bgcolor: "#fff", border: `1.5px solid ${BULLDOG_BLUE}`, borderRadius: 1.5, p: 1, width: 260,
+        maxWidth: "80vw", boxSizing: "border-box", boxShadow: "0 4px 14px rgba(0,20,45,0.18)", ...sx }}>
+      <Box component="label" sx={{ display: "flex", flexDirection: "column", gap: 0.5, fontSize: 12, fontWeight: 700,
+        color: NIGHT_SKY }}>
+        Access code, to make the link
+        <Box component="input" type="password" value={code} autoComplete="off" autoFocus
+          onChange={(e: React.ChangeEvent<HTMLInputElement>) => setCode(e.target.value)}
+          onKeyDown={(e: React.KeyboardEvent) => { if (e.key === "Escape") { e.stopPropagation(); onCancel(); } }}
+          sx={{ font: "400 14px Figtree, Helvetica, Arial, sans-serif", border: "1px solid #b8c0ca",
+            borderRadius: 1.5, px: 1, py: 0.6, minWidth: 0 }} />
+      </Box>
+      <Stack direction="row" spacing={1} justifyContent="flex-end" sx={{ mt: 0.75 }}>
+        <Button size="small" onClick={onCancel} sx={{ textTransform: "none", fontWeight: 700, color: "#333a44" }}>
+          Cancel
+        </Button>
+        <Button size="small" type="submit" variant="contained" disableElevation disabled={!code.trim()}
+          sx={{ textTransform: "none", fontWeight: 700, bgcolor: BULLDOG_BLUE, "&:hover": { bgcolor: NIGHT_SKY } }}>
+          Make the link
+        </Button>
+      </Stack>
+    </Box>
+  );
+}
+
 export function ShareButton({ link, label = "Share", title, small = false, below = false, sx }: {
-  link: () => string | Promise<string>; label?: string; title?: string; small?: boolean; below?: boolean; sx?: object;
+  link: (code?: string) => string | Promise<string>; label?: string; title?: string; small?: boolean;
+  below?: boolean; sx?: object;
 }) {
   const [copied, setCopied] = useState(false);
   const [manual, setManual] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
+  const [needCode, setNeedCode] = useState(false);
   const timer = useRef<number | undefined>(undefined);
   useEffect(() => () => window.clearTimeout(timer.current), []);
-  const go = async () => {
+  const go = async (code?: string) => {
     let url: string;
     setProblem(null);
-    try { url = await link(); }
-    catch (e) { setProblem(e instanceof Error && e.message ? e.message : "A link could not be made. Try again."); return; }
+    try { url = await link(code); }
+    catch (e) {
+      if (e instanceof CodeNeeded) { setNeedCode(true); return; }
+      setProblem(e instanceof Error && e.message ? e.message : "A link could not be made. Try again.");
+      return;
+    }
+    setNeedCode(false);
     if (await copyText(url)) {
       setManual(null);
       setCopied(true);
@@ -202,33 +275,33 @@ export function ShareButton({ link, label = "Share", title, small = false, below
       setManual(url);
     }
   };
+  const place = { position: "absolute", right: 0, zIndex: 10,
+    ...(below ? { top: "calc(100% + 6px)" } : { bottom: "calc(100% + 6px)" }) };
   return (
     <Box sx={{ position: "relative", display: "inline-flex", flexShrink: 0, ...sx }}>
-      <Button variant="outlined" size={small ? "small" : "medium"} title={title} aria-label={title}
-        startIcon={copied ? <CheckIcon /> : <ShareIcon />} onClick={go}
+      {/* Named by its visible word, "Share"; the title says what it does. */}
+      <Button variant="outlined" size={small ? "small" : "medium"} title={title}
+        startIcon={copied ? <CheckIcon /> : <ShareIcon />} onClick={() => go()}
         aria-live="polite" sx={{ ...OUTLINE_SX, whiteSpace: "nowrap", flex: 1,
-          ...(small ? { py: 0.25, px: 1, minWidth: 0, fontSize: 12.5, "& .MuiButton-startIcon": { mr: 0.5 },
+          ...(small ? { py: 0.25, px: 1, minWidth: 0, fontSize: 13, "& .MuiButton-startIcon": { mr: 0.5 },
             "& .MuiSvgIcon-root": { fontSize: 16 } } : {}) }}>
         {copied ? "Link copied" : label}
       </Button>
       {problem && (
-        <Typography role="status" sx={{ position: "absolute", top: "100%", right: 0, mt: 0.5, zIndex: 3, width: 240,
-          fontSize: 12, fontWeight: 700, bgcolor: "#fff", border: "1px solid #d5dae1", borderRadius: 1, p: 0.75 }}>
+        <Box role="status" sx={{ ...ERROR_BOX_SX, position: "absolute", top: "100%", right: 0, mt: 0.5, zIndex: 3,
+          width: 240, fontSize: 12 }}>
           {problem}
-        </Typography>
+        </Box>
       )}
-      {manual && (
-        <ManualLink url={manual} onClose={() => setManual(null)}
-          sx={{ position: "absolute", right: 0, zIndex: 10,
-            ...(below ? { top: "calc(100% + 6px)" } : { bottom: "calc(100% + 6px)" }) }} />
-      )}
+      {needCode && <CodeAsk onSubmit={(c) => go(c)} onCancel={() => setNeedCode(false)} sx={place} />}
+      {manual && <ManualLink url={manual} onClose={() => setManual(null)} sx={place} />}
     </Box>
   );
 }
 
 // ------------------------------------------------------------ the two lists
 
-// One entry in "Your areas" or "Your routes".
+// One entry in "Your hazards" or "Your alternate routes".
 export interface ListEntry {
   id: string; name: string;
   line: string;                    // "Expires Nov 26 · 6 days 23 hours left", or "Running..."
@@ -236,10 +309,11 @@ export interface ListEntry {
   shown: boolean;                  // the one on the map now
   // its shared link (a set saved before sharing existed gets one by asking
   // the server for the routes again), or null when it has none
-  link: (() => string | Promise<string>) | null;
+  // (`code` is the access code, when the reader was just asked for it)
+  link: ((code?: string) => string | Promise<string>) | null;
 }
 
-// "Your areas" and "Your routes" are one card, so the two look and behave
+// "Your hazards" and "Your alternate routes" are one card, so the two look and behave
 // exactly alike (the user asked for that): a title, a closed list that says
 // how many there are, and an open list where each row has the name, the
 // expiry or "Running...", a share icon and the X. The one on the map has a
@@ -248,7 +322,7 @@ export interface ListEntry {
 // The share icon in a list row, and what it says after a click: "Link to
 // "name" copied." under the list for a moment, or, when the browser refuses
 // the clipboard, the link selected in a small box. Used by both saved lists
-// and by the area rows in the "Choose a hazard" pulldown, so all three act
+// and by the drawn hazards' rows in the "Choose a hazard" pulldown, so all three act
 // the same.
 export function useShareNote() {
   const [note, setNote] = useState<{ name: string; url: string | null; error?: string } | null>(null);
@@ -267,7 +341,7 @@ export function ShareNote({ note, onClose }: {
   note: { name: string; url: string | null; error?: string } | null; onClose: () => void;
 }) {
   if (!note) return null;
-  if (note.error) return <Typography role="status" sx={{ mt: 0.75, fontSize: 12.5, fontWeight: 700 }}>{note.error}</Typography>;
+  if (note.error) return <Box role="status" sx={{ ...ERROR_BOX_SX, mt: 0.75 }}>{note.error}</Box>;
   return note.url
     ? <ManualLink url={note.url} onClose={onClose} sx={{ mt: 0.75, width: "auto" }} />
     : (
@@ -280,7 +354,7 @@ export function ShareNote({ note, onClose }: {
 // pick the entry.
 export function ShareIconButton({ name, onShare }: { name: string; onShare: () => void }) {
   return (
-    <IconButton size="small" aria-label={`Copy a link to ${name}`} title="Copy a link to share"
+    <IconButton size="small" aria-label={`Share ${name}`} title="Copy a link to share"
       onMouseDown={(ev) => ev.stopPropagation()}
       onClick={(ev) => { ev.stopPropagation(); ev.preventDefault(); onShare(); }}
       sx={{ flexShrink: 0, color: BULLDOG_BLUE, p: 0.5, "&:hover": { bgcolor: "#eef2f9", color: NIGHT_SKY } }}>
@@ -303,17 +377,24 @@ function SavedListCard({ title, entries, one, many, unit, onPick, onRemove }: {
 }) {
   const [open, setOpen] = useState(false);
   const { note, share: copyNote, fail, clear } = useShareNote();
+  // the entry whose link waits for the access code (see CodeAsk)
+  const [askFor, setAskFor] = useState<ListEntry | null>(null);
+  const titleId = `saved-list-${one.replace(/\W+/g, "-")}`;
   if (!entries.length) return null;
-  const share = async (e: ListEntry) => {
+  const share = async (e: ListEntry, code?: string) => {
     if (!e.link) return;
     setOpen(false);
-    try { copyNote(e.name, await e.link()); }
-    catch (err) { fail(e.name, err instanceof Error && err.message ? err.message : "A link could not be made. Try again."); }
+    try { copyNote(e.name, await e.link(code)); setAskFor(null); }
+    catch (err) {
+      if (err instanceof CodeNeeded) { clear(); setAskFor(e); return; }
+      setAskFor(null);
+      fail(e.name, err instanceof Error && err.message ? err.message : "A link could not be made. Try again.");
+    }
   };
   return (
     <Box sx={{ border: "1px solid #ddd", borderRadius: 1.5, px: 2, py: 1.5, bgcolor: "#fff", mt: 2 }}>
-      <Typography variant="subtitle2" gutterBottom>{title}</Typography>
-      <Select fullWidth size="small" value="" displayEmpty open={open}
+      <Typography variant="subtitle2" gutterBottom id={titleId}>{title}</Typography>
+      <Select fullWidth size="small" value="" displayEmpty open={open} labelId={titleId}
         onOpen={() => setOpen(true)} onClose={() => setOpen(false)}
         onChange={(e) => e.target.value && onPick(e.target.value)}
         renderValue={() => (
@@ -337,6 +418,10 @@ function SavedListCard({ title, entries, one, many, unit, onPick, onRemove }: {
           </MenuItem>
         ))}
       </Select>
+      {askFor && (
+        <CodeAsk key={askFor.id} onSubmit={(c) => share(askFor, c)} onCancel={() => setAskFor(null)}
+          sx={{ mt: 0.75, width: "auto" }} />
+      )}
       <ShareNote note={note} onClose={clear} />
       <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.75 }}>
         Kept in this browser for {ROUTE_KEEP_DAYS} days. Opening one again uses none of today's {unit}.
@@ -352,7 +437,7 @@ export function AreasCard({ areas, activeId, now, onPick, onRemove }: {
 }) {
   const t = Math.max(now, Date.now());
   return (
-    <SavedListCard title="Your areas" one="area" many="areas" unit="runs" onPick={onPick} onRemove={onRemove}
+    <SavedListCard title="Your hazards" one="hazard" many="hazards" unit="hazards to draw" onPick={onPick} onRemove={onRemove}
       entries={areas.map((a) => ({
         id: a.run_id, name: a.name, line: areaLine(a, t), when: Date.parse(a.created_at),
         shown: a.run_id === activeId, link: areaLink(a),
@@ -369,14 +454,14 @@ export function RoutesCard({ routes, shownId, now, onPick, onRemove }: {
 }) {
   const t = Math.max(now, Date.now());
   return (
-    <SavedListCard title="Your routes" one="set of routes" many="sets of routes" unit="route requests"
+    <SavedListCard title="Your alternate routes" one="set of routes" many="sets of routes" unit="route requests"
       onPick={onPick} onRemove={onRemove}
       entries={routes.map((r) => ({
         id: r.id, name: r.name, line: expiryWords(r.expires_at, t), when: Date.parse(r.saved_at),
         shown: r.id === shownId,
         // every set can be shared; one saved before the server kept routes
         // gets its id first (see shareIdFor)
-        link: async () => shareLink({ tab: "pinch", route: await shareIdFor(r) }, false),
+        link: async (code?: string) => shareLink({ tab: "pinch", route: await shareIdFor(r, code) }, false),
       }))} />
   );
 }
@@ -387,24 +472,40 @@ export function RoutesCard({ routes, shownId, now, onPick, onRemove }: {
 // could never be clicked, so they wait by the corner instead (above it and
 // to its left, so the cursor's note, below and to the right, never covers
 // them), moving with the map when it pans or zooms.
-export function DrawHint({ check, corners, canFinish, onFinish, onCancel, anchor }: {
+export function DrawHint({ check, corners, canFinish, finishWhy = null, onFinish, onCancel, anchor }: {
   check: DrawCheck | null; corners: number; canFinish: boolean; onFinish: () => void; onCancel: () => void;
+  // why Finish is grayed out, said beside it so it stays when the mouse
+  // leaves the map and the cursor's note hides
+  finishWhy?: string | null;
   anchor: [number, number] | null;
 }) {
   const small = { font: "inherit", fontWeight: 700, fontSize: 13, cursor: "pointer", px: 1.5, py: 0.5,
     borderRadius: 999, border: "1.5px solid #fff" } as const;
   const sqOver = check ? check.sqMi > MAX_SQ_MI : false;
   const acrossOver = check ? check.acrossMi > MAX_ACROSS_MI : false;
-  const right = anchor ? anchor[0] < 260 : false;     // too near the left edge: go right of it
+  // too near the left edge: go right of it (the box is wider when it says
+  // why Finish is grayed out)
+  const right = anchor ? anchor[0] < (!canFinish && finishWhy ? 360 : 260) : false;
   const below = anchor ? anchor[1] < 64 : false;      // too near the top: go below it
+  // "Too big" in words from the moment the size is over, not only in the
+  // numbers' color; the other problems once there are three corners.
+  const said = !check ? null
+    : corners >= 3 && check.problem ? check.problem
+    : check.tooBig ? TOO_BIG : null;
   return (
     <>
+      {/* Drawing problems and why Finish is grayed out, read out by screen
+          readers as they change. */}
+      <Box role="status" aria-live="polite" sx={VISUALLY_HIDDEN}>
+        {[said, !canFinish && corners > 0 && finishWhy !== said ? finishWhy : null].filter(Boolean).join(" ")}
+      </Box>
       {anchor && (
-      <Box sx={{
+      <Box className="on-dark" sx={{
         position: "absolute", zIndex: 7,
         left: anchor[0] + (right ? 14 : -14), top: anchor[1] + (below ? 14 : -14),
         transform: `translate(${right ? "0" : "-100%"}, ${below ? "0" : "-100%"})`,
         bgcolor: "rgba(20,22,26,0.92)", color: "#fff", borderRadius: 2, px: 1.25, py: 0.75,
+        border: "2px solid #fff",
         display: "flex", alignItems: "center", gap: 1, fontSize: 13, whiteSpace: "nowrap",
         boxShadow: "0 2px 8px rgba(0,0,0,0.35)",
       }}>
@@ -414,6 +515,9 @@ export function DrawHint({ check, corners, canFinish, onFinish, onCancel, anchor
             "&:disabled": { opacity: 0.45, cursor: "default" } }}>
           Finish
         </Box>
+        {!canFinish && finishWhy && (
+          <Box component="span" sx={{ fontWeight: 700, color: TIP_OVER }}>{finishWhy}</Box>
+        )}
         <Box component="button" type="button" onClick={onCancel}
           sx={{ ...small, color: "#fff", bgcolor: "transparent", "&:hover": { bgcolor: "rgba(255,255,255,0.15)" } }}>
           Cancel
@@ -425,18 +529,18 @@ export function DrawHint({ check, corners, canFinish, onFinish, onCancel, anchor
           The user asked for the message to stay close to the cursor. */}
       <CursorTip>
         <Box sx={{ fontWeight: 600 }}>
-          {corners === 0 ? "Click to add the first corner. Esc cancels."
+          {corners === 0 ? "Click to add the first corner of your hazard. Esc cancels."
             : corners < 3 ? "Click to add a corner." : "Click to add a corner. Double-click to finish."}
         </Box>
-        {check && corners >= 2 && (
+        {check && (corners >= 2 || check.tooBig) && (
           <Box sx={{ fontVariantNumeric: "tabular-nums", mt: 0.25 }}>
             <span style={{ color: sqOver ? TIP_OVER : TIP_OK }}>{check.sqMi.toFixed(1)} of {MAX_SQ_MI} sq mi</span>
             {" · "}
             <span style={{ color: acrossOver ? TIP_OVER : TIP_OK }}>{check.acrossMi.toFixed(1)} of {MAX_ACROSS_MI} mi across</span>
           </Box>
         )}
-        {check?.problem && corners >= 3 && (
-          <Box sx={{ color: "#fff", fontWeight: 700, mt: 0.25 }}>{check.problem}</Box>
+        {said && (
+          <Box sx={{ color: "#fff", fontWeight: 700, mt: 0.25 }}>{said}</Box>
         )}
       </CursorTip>
     </>
@@ -476,8 +580,10 @@ function CursorTip({ children }: { children: React.ReactNode }) {
       // keeps it apart from the dark ones (the user asked for both)
       position: "absolute", left: 0, top: 0, zIndex: 7, pointerEvents: "none", visibility: "hidden",
       bgcolor: "#1d2025", color: "#fff", border: "2px solid #fff", borderRadius: 1.5, px: 1.25, py: 0.6,
+      // as wide as its longest line up to 300 px; a longer line ("Too big...")
+      // wraps inside the box rather than running out of it
       boxShadow: "0 2px 8px rgba(0,0,0,0.35)", fontSize: 12.5, lineHeight: 1.4, maxWidth: 300,
-      whiteSpace: "nowrap",
+      width: "max-content", boxSizing: "border-box", whiteSpace: "normal", overflowWrap: "break-word",
     }}>
       {children}
     </Box>
@@ -499,7 +605,7 @@ export function NameDialog({ open, onCancel, onSubmit }: {
   }, [open]);
   const go = async () => {
     if (sending.current) return;
-    if (!name.trim()) { setError("Give the area a name."); return; }
+    if (!name.trim()) { setError("Give the hazard a name."); return; }
     if (!code.trim()) { setError("Enter the access code."); return; }
     sending.current = true;
     setBusy(true);
@@ -515,7 +621,7 @@ export function NameDialog({ open, onCancel, onSubmit }: {
   return (
     <Dialog open={open} onClose={busy ? undefined : onCancel} maxWidth="xs" fullWidth
       PaperProps={{ sx: { borderRadius: 3 } }}>
-      <DialogTitle sx={{ fontWeight: 700, pb: 0.5 }}>Name this area</DialogTitle>
+      <DialogTitle sx={{ fontWeight: 700, pb: 0.5 }}>Name this hazard</DialogTitle>
       <DialogContent>
         <Box component="form" onSubmit={(e: React.FormEvent) => { e.preventDefault(); go(); }}>
           <TextField autoFocus fullWidth margin="dense" size="small" label="Name" value={name} disabled={busy}
@@ -526,7 +632,7 @@ export function NameDialog({ open, onCancel, onSubmit }: {
             Results are kept for 7 days, then removed.
           </Typography>
           {error && (
-            <Typography variant="body2" role="alert" sx={{ mt: 1, fontWeight: 700, color: NIGHT_SKY }}>{error}</Typography>
+            <Box role="alert" sx={{ ...ERROR_BOX_SX, mt: 1 }}>{error}</Box>
           )}
           <button type="submit" hidden />
         </Box>
@@ -538,24 +644,10 @@ export function NameDialog({ open, onCancel, onSubmit }: {
         <Button onClick={go} disabled={busy} variant="contained" disableElevation sx={{
           textTransform: "none", fontWeight: 700, bgcolor: DRAW_BUTTON, "&:hover": { bgcolor: DRAW_INK },
         }}>
-          {busy ? "Starting..." : "Run it"}
+          {busy ? "Starting..." : "Find what it cuts off"}
         </Button>
       </DialogActions>
     </Dialog>
-  );
-}
-
-// The strip along the top of the map where the dark bars sit, between the
-// legend at the left and the zoom buttons at the right, so neither is covered.
-function TopSlot({ children }: { children: React.ReactNode }) {
-  return (
-    <Box sx={{
-      position: "absolute", top: 12, left: "min(320px, 30%)", right: 56, zIndex: 6,
-      display: "flex", justifyContent: "center", pointerEvents: "none",
-      "& > *": { pointerEvents: "auto" },
-    }}>
-      {children}
-    </Box>
   );
 }
 
@@ -571,35 +663,33 @@ function Spinner() {
   );
 }
 
-// A dark bar across the top of the map: a run in progress, or a short notice.
+// A dark note on the map: a drawn hazard being worked out, or a short
+// notice. MapView places it beside the drawn hazard's outline (or at the top
+// of the map when there is none), clear of the legend and the popups.
 export function MapBar({ children, spinner, onClose }: {
   children: React.ReactNode; spinner?: boolean; onClose?: () => void;
 }) {
   return (
-    <TopSlot>
-    <Box role="status" sx={{
+    <Box role="status" className="on-dark" sx={{
+      // the same 2 px white rim as the cursor's note and the hazard's popup,
+      // so the bar stands apart from the dark basemaps and the imagery
       bgcolor: "rgba(20,22,26,0.92)", color: "#fff", borderRadius: 2, pl: 1.75, pr: onClose ? 0.75 : 1.75, py: 0.9,
-      display: "flex", alignItems: "center", gap: 1.25, fontSize: 13.5, maxWidth: 640,
+      border: "2px solid #fff",
+      display: "flex", alignItems: "center", gap: 1.25, fontSize: 13.5, maxWidth: 380, boxSizing: "border-box",
       boxShadow: "0 4px 14px rgba(0,0,0,0.3)",
     }}>
       {spinner && <Spinner />}
       <Box sx={{ lineHeight: 1.4 }}>{children}</Box>
       {onClose && (
-        <Box component="button" type="button" onClick={onClose} aria-label="Close" sx={{
-          width: 26, height: 26, p: 0, border: "none", borderRadius: 999, bgcolor: "transparent", cursor: "pointer",
-          flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center",
+        <Box component="button" type="button" onClick={onClose} aria-label="Close" title="Close" sx={{
+          width: 28, height: 28, p: 0, border: "none", borderRadius: 999, bgcolor: "transparent", cursor: "pointer",
+          flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", color: "#fff",
           "&:hover": { bgcolor: "rgba(255,255,255,0.15)" },
         }}>
-          {/* an X drawn as an SVG, since Figtree has no glyph for it */}
-          <Box component="svg" viewBox="0 0 24 24" aria-hidden="true" sx={{
-            width: 16, height: 16, fill: "none", stroke: "#fff", strokeWidth: 2.4, strokeLinecap: "round",
-          }}>
-            <path d="M6 6l12 12M18 6L6 18" />
-          </Box>
+          <CloseIcon aria-hidden="true" sx={{ fontSize: 18 }} />
         </Box>
       )}
     </Box>
-    </TopSlot>
   );
 }
 
@@ -629,8 +719,8 @@ const savedDate = (iso: string) =>
 
 // The alternate routes tool, inside a clicked road's popup on Pinch points.
 // It shows the road's usual numbers with the button under them, then, once
-// the routes are back, the ways around in place of the numbers. A set reopened
-// from "Your routes" (ctx.saved) starts on its saved routes and asks the API
+// the routes are back, the alternate routes in place of the numbers. A set reopened
+// from "Your alternate routes" (ctx.saved) starts on its saved routes and asks the API
 // for nothing. `onSave` keeps a set in this browser for 7 days. A set opened
 // from someone's shared link (ctx.saved.shared) shows the same way and can be
 // saved into this browser's list too, keeping the original's expiry date.
@@ -716,7 +806,10 @@ export function RoutesBox({ ctx, onSave, removed = null, onGone, onShowing, onSe
       const res = await api<RouteResult>(base, "/routes",
         { code: use, overture_id: overtureId, lon: ctx.lngLat[0], lat: ctx.lngLat[1] });
       rememberCode(use, "routes");
-      setAskCode(false);
+      // On the published site the code is asked for every time, so the box
+      // stays and is emptied; the dev server keeps it for the visit.
+      if (CODE_REMEMBERED) setAskCode(false);
+      else setCode("");
       if (typeof res.routes_left === "number" && limits) {
         const next = { ...limits, routes_left: res.routes_left };
         routeLimits = { data: next, at: Date.now(), base };
@@ -753,17 +846,21 @@ export function RoutesBox({ ctx, onSave, removed = null, onGone, onShowing, onSe
     const keptUntil = new Date(until).toLocaleDateString(undefined, { month: "short", day: "numeric" });
     const anySafe = result.routes.some((r) => r.truck_label === "Truck safe");
     return (
-      <Box sx={{ width: 360, maxWidth: "100%", maxHeight: "min(70vh, 600px)", overflowY: "auto", pr: 0.5,
-        fontFamily: "Figtree, Helvetica, Arial, sans-serif" }}>
+      // On a wide map the popup sits under the zoom buttons at the map's
+      // right and grows to fit: MapView sets --route-room to the height there
+      // is below them, so it scrolls only when it is taller than the map.
+      // Elsewhere it keeps the old cap.
+      <Box data-route-box sx={{ width: 380, maxWidth: "100%", maxHeight: "var(--route-room, min(70vh, 600px))",
+        overflowY: "auto", pr: 0.5, fontFamily: "Figtree, Helvetica, Arial, sans-serif" }}>
         {/* Share sits beside the title: it copies a link that reopens this
             popup and its routes, so it is kept apart from Download. Only for
             routes the server kept; a set saved before it did has no id, and
             no Share button. */}
         <Stack direction="row" alignItems="flex-start" justifyContent="space-between" spacing={1}>
-          <Typography sx={{ fontWeight: 700, fontSize: 15, lineHeight: 1.3, pt: 0.25 }}>Ways around if {road} closes</Typography>
+          <Typography sx={{ fontWeight: 700, fontSize: 14, lineHeight: 1.3, pt: 0.25 }}>Alternate routes if {road} closes</Typography>
           {ok && (routeId || reopened) && (
             <ShareButton small below title="Copy a link to these routes"
-              link={async () => shareLink({ tab: "pinch", route: routeId ?? await shareIdFor(reopened!) }, true)} />
+              link={async (c?: string) => shareLink({ tab: "pinch", route: routeId ?? await shareIdFor(reopened!, c) }, true)} />
           )}
         </Stack>
         {reopened && !reopened.shared && (
@@ -776,10 +873,16 @@ export function RoutesBox({ ctx, onSave, removed = null, onGone, onShowing, onSe
             From a shared link. Worked out {savedDate(reopened.saved_at)}, {timeLeft(reopened.expires_at)}.
           </Typography>
         )}
-        {!ok && <Typography sx={{ fontSize: 12.5, mt: 0.75, lineHeight: 1.5 }}>{result.message}</Typography>}
+        {/* the result, read out by screen readers once it is back */}
+        <Box role="status" sx={VISUALLY_HIDDEN}>
+          {ok ? (result.routes.length === 1 ? "1 alternate route is shown." : `${result.routes.length} alternate routes are shown.`)
+            : result.message}
+        </Box>
+        {!ok && <Typography sx={{ fontSize: 13, mt: 0.75, lineHeight: 1.5 }}>{result.message}</Typography>}
         {ok && result.open_road && (
           <Typography sx={{ fontSize: 12, color: "#57606a", mt: 0.25 }}>
-            With the road open: {mins(result.open_road.minutes)}, {miles(result.open_road.miles)}
+            Driving this stretch normally: {result.open_road.minutes < 1 ? "under a minute" : mins(result.open_road.minutes)},{" "}
+            {miles(result.open_road.miles)}.
           </Typography>
         )}
         {ok && result.segment?.direction_note && (
@@ -790,7 +893,7 @@ export function RoutesBox({ ctx, onSave, removed = null, onGone, onShowing, onSe
         {ok && result.routes.length < 3 && (
           <Box role="note" sx={{ mt: 1, px: 1.25, py: 0.75, borderRadius: 1.5, bgcolor: "#fff1c7", color: "#6b4b00" }}>
             <Typography sx={{ fontSize: 13, fontWeight: 800, lineHeight: 1.4 }}>
-              {result.routes.length === 1 ? "Only 1 way around was found." : `Only ${result.routes.length} ways around were found.`}
+              {result.routes.length === 1 ? "Only 1 alternate route is shown." : `Only ${result.routes.length} alternate routes are shown.`}
             </Typography>
           </Box>
         )}
@@ -813,7 +916,7 @@ export function RoutesBox({ ctx, onSave, removed = null, onGone, onShowing, onSe
                   <Stack direction="row" alignItems="center" spacing={1} flexWrap="wrap" useFlexGap>
                     <Box sx={{
                       width: 20, height: 20, borderRadius: "50%", bgcolor: ROUTE_COLORS[i % 3], color: ROUTE_INKS[i % 3],
-                      fontSize: 11.5, fontWeight: 800, display: "inline-flex", alignItems: "center",
+                      fontSize: 12, fontWeight: 800, display: "inline-flex", alignItems: "center",
                       justifyContent: "center", flexShrink: 0,
                     }}>{i + 1}</Box>
                     <Typography sx={{ fontWeight: 700, fontSize: 13 }}>
@@ -822,7 +925,7 @@ export function RoutesBox({ ctx, onSave, removed = null, onGone, onShowing, onSe
                         : "No longer than the road itself"}
                     </Typography>
                     <Box component="span" sx={{
-                      fontSize: 11, fontWeight: 700, borderRadius: 999, px: 1, py: 0.25, bgcolor: tag.bg, color: tag.ink,
+                      fontSize: 12, fontWeight: 700, borderRadius: 999, px: 1, py: 0.25, bgcolor: tag.bg, color: tag.ink,
                     }}>{r.truck_label}</Box>
                   </Stack>
                   {r.truck_reason && r.truck_label !== "Truck safe" && (
@@ -835,11 +938,11 @@ export function RoutesBox({ ctx, onSave, removed = null, onGone, onShowing, onSe
                   </ButtonBase>
                   {!folded && (
                     <>
-                      <Box component="ol" sx={{ m: 0, mt: 0.5, pl: 2.5, fontSize: 12.5, lineHeight: 1.55 }}>
+                      <Box component="ol" sx={{ m: 0, mt: 0.5, pl: 2.5, fontSize: 13, lineHeight: 1.55 }}>
                         {r.steps.map((s, k) => <li key={k}>{s}</li>)}
                       </Box>
                       <Typography sx={{ fontSize: 12, color: "#57606a", mt: 0.5 }}>
-                        The whole way around: {mins(r.minutes)}, {miles(r.miles)}.{r.note ? ` ${r.note}` : ""}
+                        The whole route: {mins(r.minutes)}, {miles(r.miles)}.{r.note ? ` ${r.note}` : ""}
                       </Typography>
                     </>
                   )}
@@ -855,7 +958,7 @@ export function RoutesBox({ ctx, onSave, removed = null, onGone, onShowing, onSe
             not checked (not something the routing does). */}
         {ok && (
           <Typography sx={{ fontSize: 12, color: "#57606a", mt: 0.75, lineHeight: 1.45 }}>
-            Truck safe does not check bridge heights. Look out for low bridges.
+            The "Truck safe" label does not check bridge heights. Look out for low bridges.
           </Typography>
         )}
         {ok && result.fewer_routes && (
@@ -869,7 +972,7 @@ export function RoutesBox({ ctx, onSave, removed = null, onGone, onShowing, onSe
                 routesCsv(road, overtureId, result))}>
               Download routes (CSV)
             </Button>
-            <Typography sx={{ fontSize: 11.5, color: "#57606a", mt: 0.5 }}>
+            <Typography sx={{ fontSize: 12, color: "#57606a", mt: 0.5 }}>
               One row per step of each route, with the route's extra time and distance, the direction, and the step's miles.
             </Typography>
           </>
@@ -877,8 +980,8 @@ export function RoutesBox({ ctx, onSave, removed = null, onGone, onShowing, onSe
         {ok && onSave && (!reopened || reopened.shared) && (
           <Box sx={{ mt: 1.25, pt: 1, borderTop: "1px solid #e3e7ea" }}>
             {savedAt ? (
-              <Typography sx={{ fontSize: 12.5, fontWeight: 700, color: NIGHT_SKY }}>
-                Saved as "{saveName.trim() || road}". It is in Your routes in the panel until {keptUntil}.
+              <Typography sx={{ fontSize: 13, fontWeight: 700, color: NIGHT_SKY }}>
+                Saved as "{saveName.trim() || road}". It is in "Your alternate routes" in the panel until {keptUntil}.
               </Typography>
             ) : (
               <>
@@ -901,8 +1004,9 @@ export function RoutesBox({ ctx, onSave, removed = null, onGone, onShowing, onSe
                     Save
                   </Button>
                 </Stack>
-                <Typography sx={{ fontSize: 11.5, color: "#57606a", mt: 0.5 }}>
-                  Optional. Keeps these routes in this browser until {keptUntil}, to open again without using a click.
+                <Typography sx={{ fontSize: 12, color: "#57606a", mt: 0.5 }}>
+                  Optional. Keeps these routes in this browser until {keptUntil}. Opening them again uses none
+                  of today's route requests.
                 </Typography>
               </>
             )}
@@ -919,7 +1023,8 @@ export function RoutesBox({ ctx, onSave, removed = null, onGone, onShowing, onSe
   return (
     <Box sx={{ fontFamily: "Figtree, Helvetica, Arial, sans-serif" }}>
       <div dangerouslySetInnerHTML={{ __html: ctx.html }} />
-      <Box sx={{ mt: 1.25, pt: 1, borderTop: "1px solid #e3e7ea", maxWidth: 360 }}>
+      {/* as wide as the road's text above it */}
+      <Box sx={{ mt: 1.25, pt: 1, borderTop: "1px solid #e3e7ea" }}>
         {askCode && (
           <Box component="label" sx={{ display: "flex", flexDirection: "column", gap: 0.5, fontSize: 12, fontWeight: 700 }}>
             Access code
@@ -938,21 +1043,23 @@ export function RoutesBox({ ctx, onSave, removed = null, onGone, onShowing, onSe
           Get alternate and truck-safe routes
         </Button>
         {busy && (
-          <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 0.75 }}>
-            <CircularProgress size={14} thickness={6} sx={{ color: BULLDOG_BLUE }} />
-            <Typography sx={{ fontSize: 12.5 }}>Finding ways around...</Typography>
+          <Stack role="status" direction="row" spacing={1} alignItems="center" sx={{ mt: 0.75 }}>
+            <CircularProgress size={14} thickness={6} sx={{ color: BULLDOG_BLUE }} aria-hidden="true" />
+            <Typography sx={{ fontSize: 13 }}>Finding alternate routes...</Typography>
           </Stack>
         )}
-        {error && <Typography role="alert" sx={{ fontSize: 12.5, fontWeight: 700, color: NIGHT_SKY, mt: 0.75 }}>{error}</Typography>}
+        {error && <Box role="alert" sx={{ ...ERROR_BOX_SX, mt: 0.75 }}>{error}</Box>}
         <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mt: 0.5 }}>
           <Typography sx={{ fontSize: 12, color: "#57606a" }}>
-            {!limits ? "" : limits.turned_off ? "The routes tool is turned off for now."
-              : `${limits.routes_left.toLocaleString()} of ${limits.routes_limit.toLocaleString()} left today`}
+            {!limits ? "" : limits.turned_off
+              ? (limits.cap_reached ? "The routes tool is turned off until next month." : "The routes tool is turned off for now.")
+              : `${limits.routes_left.toLocaleString()} of ${limits.routes_limit.toLocaleString()} route requests left today`}
           </Typography>
-          {!askCode && (
+          {/* never on the published site, which asks for the code every time */}
+          {!askCode && CODE_REMEMBERED && (
             <Link component="button" underline="hover" sx={{ fontSize: 12, color: BULLDOG_BLUE }}
               onClick={() => { setAskCode(true); setCode(""); }}>
-              change code
+              Change code
             </Link>
           )}
         </Stack>

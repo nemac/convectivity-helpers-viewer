@@ -5,7 +5,11 @@ import App from "./App";
 import { BULLDOG_BLUE, NIGHT_SKY } from "./brand";
 
 const theme = createTheme({
-  typography: { fontFamily: "Figtree, Helvetica, Arial, sans-serif" },
+  typography: {
+    fontFamily: "Figtree, Helvetica, Arial, sans-serif",
+    // the card titles in the panel: one size and weight on every card
+    subtitle2: { fontSize: 14, fontWeight: 700 },
+  },
   palette: {
     primary: { main: BULLDOG_BLUE, dark: NIGHT_SKY },
   },

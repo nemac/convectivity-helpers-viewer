@@ -139,17 +139,24 @@ export type Tool = keyof typeof LOCAL_CODES;
 // The dev server always shows them.
 export const ONDEMAND_LIVE: boolean = import.meta.env.DEV || import.meta.env.VITE_ONDEMAND_LIVE === "1";
 
-// The code, once the server has accepted it, is remembered for the visit only
-// (sessionStorage), never across visits. Each tool remembers its own.
+// On the published site (a production build) the code is asked for every
+// time a drawn area is run or routes are asked for, and nothing is
+// remembered: the user asked for that. On the dev server the code, once the
+// server has accepted it, is remembered for the visit only (sessionStorage),
+// never across visits, and the localhost code is filled in. Each tool
+// remembers its own.
+export const CODE_REMEMBERED: boolean = import.meta.env.DEV;
 const CODE_KEYS: Record<Tool, string> = { fi: "ondemandCode", routes: "ondemandRoutesCode" };
 export function rememberedCode(tool: Tool = "fi"): string {
   const local = LOCAL_CODES[tool];
+  if (!CODE_REMEMBERED) return local;      // "" in a production build
   try { return window.sessionStorage.getItem(CODE_KEYS[tool]) ?? local; } catch { return local; }
 }
 export function hasRememberedCode(tool: Tool = "fi"): boolean {
   return rememberedCode(tool) !== "";
 }
 export function rememberCode(code: string, tool: Tool = "fi") {
+  if (!CODE_REMEMBERED) return;
   try { window.sessionStorage.setItem(CODE_KEYS[tool], code); } catch { /* not remembered */ }
 }
 export function forgetCode(tool: Tool = "fi") {
@@ -163,14 +170,20 @@ export class ApiError extends Error {
 }
 
 // Plain sentences for when the server cannot be reached or says nothing.
+// The routes tool (paths under /routes) has its own words for a few.
 const FALLBACK: Record<number, string> = {
   0: "The tool could not be reached. Check the connection and try again.",
-  400: "The tool could not use that request.",
+  400: "Something was wrong with what was sent. Please try again.",
   401: "That access code is not right.",
   403: "This page is not allowed to use the tool.",
-  404: "This area has expired or was never saved.",
-  429: "No more are left today. More are available tomorrow.",
-  503: "The tool is turned off for the rest of the month.",
+  404: "This hazard has expired or was never saved.",
+  429: "No more hazards can be drawn today. More are available after midnight, Eastern time.",
+  503: "Drawing is turned off for now.",
+};
+const ROUTES_FALLBACK: Record<number, string> = {
+  404: "These routes have expired or were never saved.",
+  429: "No route requests are left today. More are available after midnight, Eastern time.",
+  503: "The routes tool is turned off for now.",
 };
 
 // The body's SHA-256 in hex. On AWS, CloudFront signs every request to the
@@ -217,7 +230,9 @@ export async function api<T>(base: string, path: string, body?: unknown): Promis
   try { data = await res.json(); } catch { /* no body */ }
   if (!res.ok) {
     throw new ApiError(res.status, typeof data?.error === "string" && data.error
-      ? data.error : FALLBACK[res.status] ?? "Something went wrong. Please try again.");
+      ? data.error
+      : (path.startsWith("/routes") ? ROUTES_FALLBACK[res.status] : undefined)
+        ?? FALLBACK[res.status] ?? "Something went wrong. Please try again.");
   }
   if (data == null) throw new ApiError(0, "The tool's answer could not be read. Please try again.");
   return data as T;
@@ -227,9 +242,11 @@ export interface FiLimits {
   runs_left: number; runs_limit: number; big_left: number; big_limit: number;
   resets_at: string; first_week: boolean;
   turned_off?: boolean;      // switched off, or the month's cost cap is reached
+  cap_reached?: boolean;     // off because of the cost cap, so until next month
 }
 export interface RouteLimits {
   routes_left: number; routes_limit: number; resets_at: string; first_week: boolean; turned_off?: boolean;
+  cap_reached?: boolean;
 }
 
 export interface RunPosted {
@@ -353,6 +370,12 @@ export interface DrawCheck {
   sqMi: number; acrossMi: number; tooBig: boolean; crosses: boolean; tooFew: boolean;
   problem: string | null;       // why it cannot be finished, in a sentence
 }
+// Said in the cursor note from the moment the shape is over either limit.
+export const TOO_BIG = `Too big. Keep it within ${MAX_SQ_MI} square miles and ${MAX_ACROSS_MI} miles across.`;
+// Why Finish is grayed out, in a few words beside it.
+export function finishWhy(c: DrawCheck): string | null {
+  return c.tooFew ? "Add 3 corners to finish." : c.crosses ? "The edges cross." : c.tooBig ? "Too big to finish." : null;
+}
 export function checkShape(ring: [number, number][]): DrawCheck {
   const sqMi = areaSqMi(ring), across = acrossMi(ring);
   const tooBig = sqMi > MAX_SQ_MI || across > MAX_ACROSS_MI;
@@ -360,7 +383,7 @@ export function checkShape(ring: [number, number][]): DrawCheck {
   const tooFew = ring.length < 3;
   const problem = tooFew ? "Click at least three corners."
     : crosses ? "The edges cross. Press Backspace to undo a corner."
-    : tooBig ? `Too big. Keep it within ${MAX_SQ_MI} square miles and ${MAX_ACROSS_MI} miles across.`
+    : tooBig ? TOO_BIG
     : null;
   return { sqMi, acrossMi: across, tooBig, crosses, tooFew, problem };
 }
@@ -411,7 +434,7 @@ export function runHazard(st: RunStatus, hazardFc: GeoJSON.FeatureCollection,
     closedRoadM: s.closed_road_m, isolatedRoadM: s.isolated_road_m,
     losing: { [String(RUN_CUTOFF)]: s.losing }, maxLoss: {}, classRanges,
     label: st.name, kind: "drawn",
-    about: [`This is an area drawn on this map, in ${st.county}.`],
+    about: [`This hazard was drawn on this map, in ${st.county}.`],
   };
 }
 
@@ -520,13 +543,18 @@ export function saveRoutes(list: SavedRoute[]) {
 // route request), stores the new id and expiry in this browser's list and
 // tells the page (the "ondemand-routes-changed" event), then returns the id.
 export const ROUTES_CHANGED = "ondemand-routes-changed";
-export async function shareIdFor(r: SavedRoute): Promise<string> {
+// Thrown by shareIdFor when it needs the access code and has none (always so
+// on the published site, which remembers no code): the caller asks for it
+// in a small code box and tries again with it.
+export class CodeNeeded extends Error {}
+export async function shareIdFor(r: SavedRoute, given?: string): Promise<string> {
   if (r.route_id) return r.route_id;
-  const code = rememberedCode("routes");
-  if (!code) throw new Error("Open these routes once with the access code, then share them.");
+  const code = given?.trim() || rememberedCode("routes");
+  if (!code) throw new CodeNeeded("Enter the access code to make a link.");
   const res = await api<RouteResult & { route_id?: string; expires_at?: string }>(routesApi(), "/routes",
     { code, overture_id: r.overture_id, lon: r.lon, lat: r.lat });
   if (!res.route_id) throw new Error("A link could not be made. Try again.");
+  if (given) rememberCode(code, "routes");
   const id = res.route_id, until = res.expires_at ?? r.expires_at;
   saveRoutes(loadRoutes().map((x) => (x.id === r.id ? { ...x, route_id: id, expires_at: until } : x)));
   try { window.dispatchEvent(new Event(ROUTES_CHANGED)); } catch { /* nothing listening */ }

@@ -1,4 +1,4 @@
-import { ReactNode, useEffect, useRef, useState } from "react";
+import { ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import maplibregl, { Map, MapMouseEvent } from "maplibre-gl";
 import { Protocol } from "pmtiles";
@@ -7,9 +7,10 @@ import {
   HAZARD_BUILDING_COLORS, HazardBuildingStatus, HAZARD_WORDS, Hazard, ISOLATION_CUTOFFS,
   MIN_RANKED, PINCH_MAX_DETOUR_M, PINCH_NO_ALTERNATIVE_M, SERVICES_URL, SERVICE_INK, SERVICE_KINDS,
   STYLES, Score, ServiceKind, humanMiles,
-  humanNumber, humanPercent, humanSeconds, milesInWords, percentileOf, rankSentence,
+  aboutShare, humanNumber, humanSeconds, milesInWords, percentileOf, rankSentence,
   roadTypeLabel, splitNames,
 } from "./config";
+import { checkShape } from "./ondemandApi";
 import type { SavedRoute } from "./ondemandApi";
 
 // QGIS line widths are in millimetres on a printed page; the map works in
@@ -311,6 +312,21 @@ const ROAD_LAYER_IDS = [...HAZARD_HL_LAYERS, ...HAZARD_BLDG_LAYERS("in_hazard"),
 
 const HAZARD_INK = "#23272e";
 
+// What the analysis draws, with each layer's usual opacity, so the map can
+// dim it while a drawn hazard is being worked out (the previous map stays on
+// screen, faded, until the new results arrive) and bring it back after.
+// `opacity` is the roads' own setting.
+const DIM = 0.3;
+const dimmable = (opacity: number): [string, string, number][] => [
+  ["roads-line", "line-opacity", opacity], ["roads-casing", "line-opacity", opacity],
+  ["hazard-tint", "fill-opacity", 0.14], ["hazard-fill", "fill-opacity", 0.95],
+  ["hazard-rim", "line-opacity", 0.95], ["hazard-line", "line-opacity", 1],
+  ...(["in_hazard", "cut_off"] as HazardBuildingStatus[]).flatMap((k): [string, string, number][] => [
+    [`hazard-bldg-${k}-halo`, "line-opacity", 1], [`hazard-bldg-${k}`, "fill-opacity", 1],
+    [`hazard-bldg-${k}-edge`, "line-opacity", 1],
+  ]),
+];
+
 function casingWidth(classes: { value: number; widthMm: number }[]): any {
   const mm = classes.find((c) => c.value === CUT_OFF_CLASS)?.widthMm ?? 1;
   const interp: any[] = ["interpolate", ["linear"], ["zoom"]];
@@ -409,27 +425,39 @@ const glowColors = (basemap: BasemapKey) => {
 
 // The area being drawn: a see-through bright green fill, its edges in the
 // same green over a dark green line (so they read on light gray as well as
-// dark gray), a dashed line to the mouse, and white corners.
+// dark gray), a dashed line to the mouse, and white corners. Once the shape
+// is over the size limits, the fill and the edges turn violet (never red)
+// and the edges are dashed over a white line, so "too big" shows on the
+// shape itself and not only in the numbers' color.
 const DRAW_GREEN = "#2ECC8C";
 const DRAW_DARK = "#0b3d2a";
+const DRAW_OVER = "#5b2a86";
 const role = (r: string): any => ["==", ["get", "role"], r];
+const over = (on: boolean): any => ["==", ["get", "over"], on];
+const byOver = (yes: string, no: string): any => ["case", ["==", ["get", "over"], true], yes, no];
 const DRAW_LAYERS: any[] = [
   { id: "draw-fill", type: "fill", source: "draw", filter: role("fill"),
-    paint: { "fill-color": DRAW_GREEN, "fill-opacity": 0.22 } },
+    paint: { "fill-color": byOver(DRAW_OVER, DRAW_GREEN), "fill-opacity": 0.22 } },
   { id: "draw-edge-dark", type: "line", source: "draw", filter: role("edge"),
-    layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": DRAW_DARK, "line-width": 6 } },
-  { id: "draw-edge", type: "line", source: "draw", filter: role("edge"),
+    layout: { "line-cap": "round", "line-join": "round" },
+    paint: { "line-color": byOver("#ffffff", DRAW_DARK), "line-width": 6 } },
+  { id: "draw-edge", type: "line", source: "draw", filter: ["all", role("edge"), over(false)],
     layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": DRAW_GREEN, "line-width": 3 } },
+  { id: "draw-edge-over", type: "line", source: "draw", filter: ["all", role("edge"), over(true)],
+    paint: { "line-color": DRAW_OVER, "line-width": 4, "line-dasharray": [2, 1.2] } },
   { id: "draw-band", type: "line", source: "draw", filter: role("band"),
-    paint: { "line-color": DRAW_GREEN, "line-width": 2.5, "line-dasharray": [2, 1.5] } },
+    paint: { "line-color": byOver(DRAW_OVER, DRAW_GREEN), "line-width": 2.5, "line-dasharray": [2, 1.5] } },
   { id: "draw-vertex", type: "circle", source: "draw", filter: role("vertex"),
-    paint: { "circle-radius": 5.5, "circle-color": "#ffffff", "circle-stroke-color": DRAW_GREEN, "circle-stroke-width": 3 } },
+    paint: { "circle-radius": 5.5, "circle-color": "#ffffff", "circle-stroke-color": byOver(DRAW_OVER, DRAW_GREEN),
+      "circle-stroke-width": 3 } },
 ];
 
 // The drawing as map features: the corners so far, and while drawing, the
 // mouse position as a corner still to come.
-function drawData(pts: [number, number][], cursor: [number, number] | null, active: boolean): GeoJSON.FeatureCollection {
-  const f = (r: string, geometry: GeoJSON.Geometry): GeoJSON.Feature => ({ type: "Feature", properties: { role: r }, geometry });
+function drawData(pts: [number, number][], cursor: [number, number] | null, active: boolean,
+                  tooBig = false): GeoJSON.FeatureCollection {
+  const f = (r: string, geometry: GeoJSON.Geometry): GeoJSON.Feature =>
+    ({ type: "Feature", properties: { role: r, over: tooBig }, geometry });
   const out: GeoJSON.Feature[] = [];
   const ring = active && cursor ? [...pts, cursor] : pts;
   if (ring.length >= 3) out.push(f("fill", { type: "Polygon", coordinates: [[...ring, ring[0]]] }));
@@ -528,6 +556,15 @@ interface Props {
   // road's popup with the saved routes in it, asking the API for nothing.
   // `key` changes with each pick, so picking the same set twice still opens it.
   openRoutes?: { key: string; saved: SavedRoute } | null;
+  // A drawn hazard is being worked out: the map still shows what it showed
+  // before, faded, with no popups, until the results arrive.
+  dimmed?: boolean;
+  // A short message about a drawn hazard ("working on it", "ready", "could
+  // not be worked out"), set beside `noteRing`, its outline, kept on the map
+  // and clear of the legend and pinned popups. With no outline it sits at
+  // the top of the map.
+  note?: ReactNode | null;
+  noteRing?: [number, number][] | null;
 }
 
 export interface RouteBoxCtx {
@@ -578,7 +615,7 @@ export default function MapView({
   guide, onGuideAway, onGuideClosed, hazard = null, buildingsUrl = null, services = null,
   hazardBuildings = ["cut_off", "in_hazard"], guideOnHazard = false, guideStep = -1,
   guideCard = null, run = null, drawing = false, onDraw, onDrawFinish, onDrawCancel, drawShape = null,
-  routeBox, openRoutes = null,
+  routeBox, openRoutes = null, dimmed = false, note = null, noteRing = null,
 }: Props) {
   const div = useRef<HTMLDivElement>(null);
   const map = useRef<Map | null>(null);
@@ -596,6 +633,8 @@ export default function MapView({
   runRef.current = run;
   const drawingRef = useRef(drawing);
   drawingRef.current = drawing;
+  const dimRef = useRef(dimmed);
+  dimRef.current = dimmed;
   const drawCb = useRef({ onDraw, onDrawFinish, onDrawCancel });
   drawCb.current = { onDraw, onDrawFinish, onDrawCancel };
   const routeBoxRef = useRef(routeBox);
@@ -730,12 +769,37 @@ export default function MapView({
     }
     clearRoutes(m);
     p.addTo(m);
+    if (!host) requestAnimationFrame(() => { if (pinned.current === p) clearOfEdges(m, p); });
+    // With routes on a wide map, the popup is docked at the map's right, under
+    // the zoom buttons, and stays put while the map fits the routes beside it
+    // or is panned. It grows to fit, scrolling only when it is taller than
+    // the room there. When it is taller than the room under the buttons but
+    // not than the map, it moves up beside them instead.
+    let dock: (() => void) | null = null;
+    const undock = () => {
+      if (!dock) return;
+      m.off("move", dock);
+      m.off("resize", dock);
+      dock = null;
+      p.removeClassName("route-docked");
+      p.setOffset(12);
+      p.options.anchor = undefined;
+      p.getElement()?.style.removeProperty("--route-room");
+    };
+    if (routeEl) p.on("close", undock);
     if (routeEl && hit) {
       const ll = p.getLngLat();
       const ctx: RouteBoxCtx = {
         key: ++routeSeq.current, props: hit.properties ?? {}, lngLat: [ll.lng, ll.lat], saved,
         html: roadHtml(hit.properties ?? {}),
-        relayout: () => { if (pinned.current === p) requestAnimationFrame(() => p.setLngLat(p.getLngLat())); },
+        relayout: () => {
+          if (pinned.current !== p) return;
+          requestAnimationFrame(() => {
+            if (dock) { dock(); return; }
+            p.setLngLat(p.getLngLat());
+            if (!m.isMoving()) clearOfEdges(m, p);
+          });
+        },
         close: () => { if (pinned.current === p) p.remove(); },
         highlight: (n) => { if (pinned.current === p) setRouteHl(m, n); },
         onHighlight: (f) => {
@@ -745,6 +809,7 @@ export default function MapView({
         show: (routes) => {
           if (pinned.current !== p) return;
           clearRoutes(m);
+          if (!routes.length) undock();
           (m.getSource("alt-routes") as maplibregl.GeoJSONSource | undefined)?.setData({
             type: "FeatureCollection",
             // drawn last to first, so route 1 ends up on top
@@ -759,7 +824,11 @@ export default function MapView({
             el.style.cursor = "pointer";
             el.addEventListener("mouseenter", () => setRouteHl(m, r.n));
             el.addEventListener("mouseleave", () => setRouteHl(m, null));
-            return new maplibregl.Marker({ element: el }).setLngLat(midpoint(r.geometry)).addTo(m);
+            const mk = new maplibregl.Marker({ element: el }).setLngLat(midpoint(r.geometry)).addTo(m);
+            // named "Route 1" and so on, not MapLibre's "Map marker"
+            el.setAttribute("aria-label", `Route ${r.n}`);
+            el.setAttribute("role", "img");
+            return mk;
           });
           if (!routes.length) return;
           // Fit the routes into the map beside the popup, which moves to the
@@ -772,10 +841,10 @@ export default function MapView({
           const box = m.getContainer().getBoundingClientRect();
           const legend = document.querySelector<HTMLElement>('[data-guide="legend"]')?.getBoundingClientRect();
           const clear = legend && legend.width > 200 ? Math.max(50, Math.round(legend.right - box.left + 20)) : 50;
-          // the popup takes the right-hand 440 px when the map is wide enough;
+          // the popup takes the right-hand 480 px when the map is wide enough;
           // the routes keep clear of the legend when there is room for that too
           const side = W >= 760;
-          const besideOk = W - 440 - clear >= 320;
+          const besideOk = W - 480 - clear >= 320;
           const left = !side || besideOk ? clear : 50;
           // Too narrow to keep beside the legend: keep below it instead, when
           // that leaves the routes at least 240 px of height.
@@ -783,18 +852,50 @@ export default function MapView({
           const below = legend && legend.width > 200 ? Math.round(legend.bottom - box.top + 20) : 50;
           const top = side && !besideOk && H - below - 50 >= 240 ? below : 50;
           const fit = {
-            padding: side ? { top, bottom: 50, left, right: 440 } : { top: 60, bottom: 50, left: Math.min(left, W / 3), right: 50 },
+            padding: side ? { top, bottom: 50, left, right: 480 } : { top: 60, bottom: 50, left: Math.min(left, W / 3), right: 50 },
             maxZoom: 16,
           };
-          // where the map will be centred once fitted: the popup sits at the
-          // map's middle height, so a tall popup never runs off the bottom
-          // when the routes are held below the legend
-          const cam = m.cameraForBounds(b, fit);
+          if (side && !dock) {
+            dock = () => {
+              const c = m.getContainer();
+              const box = c.getBoundingClientRect();
+              const W = c.clientWidth, H = c.clientHeight;
+              const ctrl = c.querySelector(".maplibregl-ctrl-top-right")?.getBoundingClientRect();
+              const under = ctrl ? Math.round(ctrl.bottom - box.top + 10) : 60;
+              // the popup's own padding above and below its content
+              const pad = 23;
+              const natural = (p.getElement()?.querySelector<HTMLElement>("[data-route-box]")?.scrollHeight ?? 0) + pad;
+              const roomUnder = H - under - CREDITS_H - 8;
+              const besideButtons = natural > roomUnder && ctrl != null;
+              const top = besideButtons ? 10 : under;
+              const right = besideButtons ? Math.round(box.right - ctrl!.left + 10) : 10;
+              p.options.anchor = "top-right";
+              p.setLngLat(m.unproject([W - right, top]));
+              p.getElement()?.style.setProperty("--route-room",
+                `${Math.max(200, H - top - CREDITS_H - 8 - pad)}px`);
+            };
+            p.addClassName("route-docked");
+            p.setOffset(0);
+            m.on("move", dock);
+            m.on("resize", dock);
+          }
+          dock?.();
+          // Not docked (a narrow map): no taller than the map, and once the
+          // map has fitted the routes it moves up just enough that the popup
+          // ends above the credits, never so far that its top leaves the map.
+          // (The listener goes on after fitBounds, which first stops any
+          // move under way and so fires a moveend of its own at once.)
+          if (!dock) {
+            p.getElement()?.style.setProperty("--route-room",
+              `min(70vh, 600px, ${Math.max(200, H - 16 - CREDITS_H - 23)}px)`);
+          }
           m.fitBounds(b, { ...fit, duration: 700 });
-          if (side) {
-            p.options.anchor = "left";
-            const midLat = cam?.center ? maplibregl.LngLat.convert(cam.center).lat : (b[0][1] + b[1][1]) / 2;
-            p.setLngLat([b[1][0], midLat]);
+          if (!dock) {
+            m.once("moveend", () => {
+              if (pinned.current !== p || dock) return;
+              const o = creditsOverlap(m, p);
+              if (o && o.over > 0) m.panBy([0, Math.max(0, Math.min(o.over, o.top - 8))], { duration: 300 });
+            });
           }
         },
       };
@@ -1044,6 +1145,22 @@ export default function MapView({
       if (m.getCanvasContainer().contains(ev.target as Node)) { pressed = true; stopHover(); }
     }, true);
     window.addEventListener("mouseup", () => { pressed = false; }, true);
+    // Escape closes the road's or service's popup (hovered or pinned) and the
+    // hazard's. While an area is drawn, Escape cancels the drawing instead,
+    // and a dialog or menu over the map takes Escape for itself first.
+    const onEscape = (ev: KeyboardEvent) => {
+      if (ev.key !== "Escape" || ev.defaultPrevented || drawingRef.current) return;
+      clearTimeout(hoverTimer);
+      hover.current?.remove();
+      hazardHover.current?.remove();
+      if (pinned.current && pinned.current !== guidePopup.current) {
+        pinned.current.remove();
+        pinned.current = null;
+      }
+      if (!hazardPinned.current && !guideHazard.current) setHazardHighlight(m, false);
+      if (!pinned.current) (m.getSource("hover") as maplibregl.GeoJSONSource | undefined)?.setData(EMPTY_FC);
+    };
+    window.addEventListener("keydown", onEscape);
     m.on("movestart", () => {
       stopHover();
       // the glow stays only when it marks a pinned popup's road
@@ -1054,7 +1171,11 @@ export default function MapView({
       clearTimeout(hoverTimer);
       if (pressed || m.isMoving()) { stopHover(); return; }
       // no popups while an area is being drawn
-      if (drawingRef.current) { stopHover(); hazardHover.current?.remove(); return; }
+      if (drawingRef.current || dimRef.current) {
+        stopHover(); hazardHover.current?.remove();
+        if (dimRef.current) m.getCanvas().style.cursor = "";
+        return;
+      }
       // Alternate routes on the map: hovering one lights it and its row in
       // the popup (a few pixels' slack, so thin lines are easy to find).
       if (routeMarkers.current.length && m.getLayer("alt-routes-line")) {
@@ -1124,7 +1245,10 @@ export default function MapView({
             offset: 12, className: "road-hover",
           });
         }
+        // MapLibre picks the side each time, then it is moved off the credits
+        hover.current.options.anchor = undefined;
         hover.current.setLngLat(e.lngLat).setHTML(html).addTo(m);
+        hoverClearOfCredits(m, hover.current, e.point);
         // The hazard's popup is charcoal, so it never reads as a road's. Set
         // after addTo: before its first addTo a popup has no element to take
         // the class, and the hazard's white text then sat on white.
@@ -1156,7 +1280,7 @@ export default function MapView({
       // on as usual and shuts the guide on the way. The second click of a
       // double-click (a zoom) is never a click away: without this, one
       // double-click would use the nudge and close the guide together.
-      if (drawingRef.current) return;
+      if (drawingRef.current || dimRef.current) return;
       if (guideInView()) {
         if (e.originalEvent.detail > 1) return;
         if (awayCb.current?.()) return;
@@ -1192,7 +1316,7 @@ export default function MapView({
 
     map.current = m;
     if (import.meta.env.DEV) (window as any).__map = m;   // for checks in a browser
-    return () => { m.remove(); map.current = null; ready.current = false; };
+    return () => { window.removeEventListener("keydown", onEscape); m.remove(); map.current = null; ready.current = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -1348,11 +1472,25 @@ export default function MapView({
     for (const k of Object.keys(BASEMAPS) as BasemapKey[]) {
       m.setLayoutProperty(`base-${k}`, "visibility", k === basemap ? "visible" : "none");
     }
+    // faded while a drawn hazard is being worked out
+    const f = dimRef.current ? DIM : 1;
+    for (const [id, prop, base] of dimmable(opacity)) {
+      if (m.getLayer(id)) m.setPaintProperty(id, prop, base * f);
+    }
   };
   useEffect(() => {
     if (map.current && ready.current) apply(map.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [classField, basemap, opacity, minClass, hazardBuildings.join(",")]);
+  }, [classField, basemap, opacity, minClass, hazardBuildings.join(","), dimmed]);
+  // Dimmed, the map answers nothing: its popups would describe the old map.
+  useEffect(() => {
+    const m = map.current;
+    if (!m || !dimmed) return;
+    hover.current?.remove();
+    hazardHover.current?.remove();
+    if (pinned.current && pinned.current !== guidePopup.current) { pinned.current.remove(); pinned.current = null; }
+    (m.getSource("hover") as maplibregl.GeoJSONSource | undefined)?.setData(EMPTY_FC);
+  }, [dimmed]);
 
   // Move the view when the tab or county actually changes.
   //
@@ -1563,7 +1701,9 @@ export default function MapView({
     const canvas = m.getCanvas();
     canvas.style.cursor = "crosshair";
     const render = () => {
-      (m.getSource("draw") as maplibregl.GeoJSONSource | undefined)?.setData(drawData(pts, cursor, true));
+      const ring = cursor ? [...pts, cursor] : pts;
+      (m.getSource("draw") as maplibregl.GeoJSONSource | undefined)
+        ?.setData(drawData(pts, cursor, true, ring.length >= 2 && checkShape(ring).tooBig));
       // where the last corner sits on screen, so Finish and Cancel can sit
       // beside it (and follow it when the map pans or zooms)
       const last = pts.length ? m.project(pts[pts.length - 1]) : null;
@@ -1594,11 +1734,19 @@ export default function MapView({
     };
     const onOut = () => { cursor = null; if (!done) render(); };
     const onKey = (ev: KeyboardEvent) => {
+      // Keys typed into a field, or pressed on a focused button, link or other
+      // control (Enter on "Cancel drawing" must cancel, not finish), are left
+      // to that control. The map's own canvas is not a control.
       const t = ev.target as HTMLElement | null;
-      if (done || (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable))) return;
+      const onControl = t && t !== canvas && (t.isContentEditable
+        || /^(INPUT|TEXTAREA|SELECT|BUTTON|A|SUMMARY)$/.test(t.tagName)
+        || /^(button|link|checkbox|radio|switch|slider|menuitem|option|tab|combobox|textbox)$/.test(t.getAttribute("role") ?? ""));
+      if (done || onControl) return;
       if (ev.key === "Backspace" || ev.key === "Delete") { ev.preventDefault(); pts.pop(); render(); }
       else if (ev.key === "Escape") drawCb.current.onDrawCancel?.();
-      else if (ev.key === "Enter") finish();
+      // preventDefault: the name dialog opens and focuses its Name field
+      // before this Enter is done, and the same key then sent the empty form
+      else if (ev.key === "Enter") { ev.preventDefault(); finish(); }
     };
     m.on("click", onClick);
     m.on("dblclick", onDbl);
@@ -1651,6 +1799,7 @@ export default function MapView({
       <div ref={div} style={{ position: "absolute", inset: 0 }} />
       {guideHost && guide != null && createPortal(guide, guideHost)}
       {routeHost && routeBox && createPortal(routeBox(routeHost.ctx), routeHost.el, String(routeHost.ctx.key))}
+      {note != null && <ShapeNote map={map.current} ring={noteRing}>{note}</ShapeNote>}
     </>
   );
 }
@@ -1712,11 +1861,11 @@ function describe(p: Record<string, any>, classField: string, score: Score,
         scope: "in the state",
       });
       sections.push({
-        heading: "How much uses it",
+        heading: "How busy it is",
         lines: [rank ? `${rank}.` : "Almost no journeys pass along it."],
       });
-      footnote = "A journey between buildings means one building traveling to "
-        + "another, counted on the quickest route. Every building is tied to "
+      footnote = "A journey is a drive from one building to another, by the "
+        + "quickest route. Every building is tied to "
         + "its nearest road, and a route joining two busy places counts for "
         + "more than one joining two empty ones. These are estimates from "
         + "where buildings are, not measured traffic counts.";
@@ -1740,7 +1889,7 @@ function describe(p: Record<string, any>, classField: string, score: Score,
       }
     }
     if (p.combined_affected_od != null && Number(p.combined_affected_od) > 0) {
-      rows.push(["Trips forced to re-route", humanNumber(p.combined_affected_od)]);
+      rows.push(["Trips that must go another way", humanNumber(p.combined_affected_od)]);
     }
     if (p.combined_disconnected_od != null && Number(p.combined_disconnected_od) > 0) {
       rows.push(["Trips with no route at all", humanNumber(p.combined_disconnected_od)]);
@@ -1772,7 +1921,7 @@ function describe(p: Record<string, any>, classField: string, score: Score,
         // these lines get read on their own, and a bare count leaves the
         // reader asking "306 of what?".
         missed.push(`${humanNumber(n)} ${n === 1 ? "trip" : "trips"} can no `
-          + `longer reach a service within ${mins} minutes`);
+          + `longer reach a service within ${mins} minutes.`);
       }
     }
     if (missed.length) {
@@ -1785,9 +1934,9 @@ function describe(p: Record<string, any>, classField: string, score: Score,
     // no way to know that one "trip" is one starting point going to one
     // service, nor that the services are a fixed set of four.
     if (sections.length) {
-      footnote = "A trip means one starting point traveling to one service: "
-        + "a fire station, medical facility, school, or grocery or convenience "
-        + "store. Only trips whose quickest route runs along this road are "
+      footnote = "A trip is a drive from one starting point on a main road to one "
+        + "service: a fire station, medical facility, school, or grocery or "
+        + "convenience store. Only trips whose quickest route runs along this road are "
         + "counted.";
     }
   }
@@ -1850,6 +1999,7 @@ function describeIsolation(p: Record<string, any>, classField: string, score: Sc
   const losing = hazard.losing[String(minutes)] ?? 0;
   const sections: Section[] = [];
   const buildings = (n: number) => `${humanNumber(n)} ${n === 1 ? "building" : "buildings"}`;
+  const upper = (t: string) => t.charAt(0).toUpperCase() + t.slice(1);
 
   // A road that reaches no buildings even before the hazard, at the longest
   // drive time, is not joined to the rest of the network in the data (mostly
@@ -1915,15 +2065,15 @@ function describeIsolation(p: Record<string, any>, classField: string, score: Sc
   if (!isFinite(before) && p[`loss_${minutes}m`] != null) {
     // A drawn area's files carry the share alone, without the counts.
     sections.push({ heading: "For someone on this road", lead: loss > 0, lines: [loss > 0
-      ? `About ${humanPercent(loss)} of the homes, shops, schools and other buildings they could drive `
+      ? `${upper(aboutShare(loss))} of the homes, shops, schools and other buildings they could drive `
         + `to within ${minutes} minutes are now out of reach.`
       : `Everything they could drive to within ${minutes} minutes is still in reach.`] });
   }
   if (isFinite(before)) {
     const lines: string[] = [];
-    if (before <= 0) lines.push(`No buildings are within a ${minutes} minute drive of here.`);
+    if (before <= 0) lines.push(`No buildings are within a ${minutes}-minute drive of here.`);
     else if (lost > 0) {
-      lines.push(`About ${humanPercent(lost / before)} of the homes, shops, schools and other `
+      lines.push(`${upper(aboutShare(lost / before))} of the homes, shops, schools and other `
         + `buildings they could drive to within ${minutes} minutes are now out of reach.`);
       lines.push(`Before ${w.event} they could reach ${buildings(before)} within ${minutes} minutes. `
         + `With ${w.closed} closed, they can reach ${humanNumber(before - lost)}, which is `
@@ -1942,8 +2092,8 @@ function describeIsolation(p: Record<string, any>, classField: string, score: Sc
     const l = Number(p[`lost_${c}m`] ?? 0);
     if (!isFinite(b) || b <= 0) continue;
     others.push(l > 0
-      ? `Within ${c} minutes you lose ${humanNumber(l)} of ${buildings(b)}, about ${humanPercent(l / b)}.`
-      : `Within ${c} minutes you lose none of ${buildings(b)}.`);
+      ? `Within ${c} minutes they lose ${humanNumber(l)} of ${buildings(b)}, ${aboutShare(l / b)}.`
+      : `Within ${c} minutes they lose none of ${buildings(b)}.`);
   }
   if (others.length) sections.push({ heading: "At the other drive times", lines: others });
 
@@ -2020,6 +2170,49 @@ function hazardSide(m: Map, h: Hazard): { at: [number, number]; anchor: PopAncho
   return { at: [e, midLat], anchor: undefined };
 }
 
+// The map's credits run along the foot of the map at its right, about 36 px
+// tall with their margin. How far a popup runs down onto that strip (0 or
+// less when it is clear), and its top and height, in map pixels.
+const CREDITS_H = 36;
+function creditsOverlap(m: Map, p: maplibregl.Popup): { over: number; top: number; h: number } | null {
+  const el = p.getElement();
+  if (!el || !p.isOpen()) return null;
+  const box = m.getContainer().getBoundingClientRect();
+  const r = el.getBoundingClientRect();
+  return { over: r.bottom - (box.bottom - CREDITS_H), top: r.top - box.top, h: r.height };
+}
+// A clicked popup that runs onto the credits: the map moves up just enough
+// to clear them, never so far that the popup's top leaves the map. One that
+// would sit under the open legend at the map's top left moves right, clear
+// of it, as far as the map's right edge allows. Popups are drawn over the
+// legend (index.html), so this only keeps the legend in view.
+function clearOfEdges(m: Map, p: maplibregl.Popup) {
+  const o = creditsOverlap(m, p);
+  const el = p.getElement();
+  if (!o || !el) return;
+  const dy = o.over > 0 ? Math.max(0, Math.min(o.over, o.top - 8)) : 0;
+  let dx = 0;
+  const box = m.getContainer().getBoundingClientRect();
+  const r = el.getBoundingClientRect();
+  const lg = document.querySelector<HTMLElement>('[data-guide="legend"]')?.getBoundingClientRect();
+  if (lg && lg.width > 0 && r.left < lg.right + 8 && r.right > lg.left
+      && r.top - dy < lg.bottom && r.bottom - dy > lg.top) {
+    dx = Math.max(0, Math.min(Math.round(lg.right + 12 - r.left), Math.round(box.right - 10 - r.right)));
+  }
+  if (dx > 0 || dy > 0) m.panBy([-dx, dy], { duration: 300 });
+}
+// A hover popup that runs onto the credits: it goes beside the cursor,
+// centred on it, when that fits between the top of the map and the credits.
+// The map is never moved under the mouse.
+function hoverClearOfCredits(m: Map, p: maplibregl.Popup, at: maplibregl.Point) {
+  const o = creditsOverlap(m, p);
+  if (!o || o.over <= 0) return;
+  const H = m.getContainer().clientHeight, W = m.getContainer().clientWidth;
+  if (at.y - o.h / 2 < 8 || at.y + o.h / 2 > H - CREDITS_H) return;
+  p.options.anchor = at.x < W / 2 ? "left" : "right";
+  p.setLngLat(p.getLngLat());
+}
+
 // A service's popup: its name and what kind of place it is.
 function describeService(p: Record<string, any>): string {
   const kind = SERVICE_KINDS.find((k) => k.id === p.kind);
@@ -2034,7 +2227,8 @@ function describeService(p: Record<string, any>): string {
 // hazard-pop class in index.html), so it never reads as a road's popup.
 function describeHazard(h: Hazard): string {
   const w = HAZARD_WORDS[h.kind];
-  const kind = h.kind === "drawn" ? "Your area" : h.kind.charAt(0).toUpperCase() + h.kind.slice(1);
+  const kind = h.kind === "drawn" ? (h.shared ? "Shared hazard" : "Your hazard")
+    : h.kind.charAt(0).toUpperCase() + h.kind.slice(1);
   const n = (v: number, one: string, many: string) => `${humanNumber(v)} ${v === 1 ? one : many}`;
   const lines = [
     h.about[0],
@@ -2049,36 +2243,36 @@ function describeHazard(h: Hazard): string {
     ...h.about.slice(1),
   ];
   return `<div style="font-family:Figtree,Helvetica,Arial,sans-serif;max-width:380px;color:#fff">`
-    + `<div style="font-size:10.5px;letter-spacing:0.06em;text-transform:uppercase;color:#c9ced4;font-weight:700">${escapeHtml(kind)}</div>`
-    + `<div style="font-weight:700;font-size:13.5px;line-height:1.3;margin-top:1px">${escapeHtml(h.label)}</div>`
-    + lines.map((l) => `<div style="font-size:11.5px;line-height:1.5;margin-top:5px">${escapeHtml(l)}</div>`).join("")
+    + `<div style="font-size:12px;letter-spacing:0.06em;text-transform:uppercase;color:#c9ced4;font-weight:700">${escapeHtml(kind)}</div>`
+    + `<div style="font-weight:700;font-size:14px;line-height:1.3;margin-top:1px">${escapeHtml(h.label)}</div>`
+    + lines.map((l) => `<div style="font-size:13px;line-height:1.5;margin-top:5px">${escapeHtml(l)}</div>`).join("")
     + `</div>`;
 }
 
 function renderPopup(primary: string, type: string, rank: string, sections: Section[],
                      footnote: string, maxWidth: number): string {
   const body = sections.map(({ heading, rows, lines, lead }) => {
-    const head = `<div style="font-size:10.5px;color:#7a8490;text-transform:uppercase;`
+    const head = `<div style="font-size:12px;color:#57606a;text-transform:uppercase;`
       + `letter-spacing:0.05em;margin:8px 0 3px">${escapeHtml(heading)}</div>`;
     if (lines) {
       return head + lines.map((l, i) =>
-        `<div style="font-size:${lead && i === 0 ? "12.5px;font-weight:700" : "11.5px"};line-height:1.5`
+        `<div style="font-size:13px;${lead && i === 0 ? "font-weight:700;" : ""}line-height:1.5`
         + `${lead && i === 0 ? ";margin-bottom:3px" : ""}">${escapeHtml(l)}</div>`).join("");
     }
-    return head + `<table style="border-collapse:collapse;font-size:11.5px">`
+    return head + `<table style="border-collapse:collapse;font-size:13px">`
       + (rows ?? []).map(([k, v]) =>
-          `<tr><td style="color:#667;padding:2px 12px 2px 0;vertical-align:top">${escapeHtml(k)}</td>`
+          `<tr><td style="color:#57606a;padding:2px 12px 2px 0;vertical-align:top">${escapeHtml(k)}</td>`
           + `<td style="font-weight:600;padding:2px 0">${escapeHtml(v)}</td></tr>`).join("")
       + `</table>`;
   }).join("");
 
   return `
     <div style="font-family:Figtree,Helvetica,Arial,sans-serif;max-width:${maxWidth}px">
-      <div style="font-weight:700;font-size:13.5px;line-height:1.3">${escapeHtml(primary)}</div>
-      <div style="color:#667;font-size:11.5px">${escapeHtml(type)}</div>
-      ${rank ? `<div style="font-size:12px;margin-top:7px">${rank}</div>` : ""}
+      <div style="font-weight:700;font-size:14px;line-height:1.3">${escapeHtml(primary)}</div>
+      <div style="color:#57606a;font-size:12px">${escapeHtml(type)}</div>
+      ${rank ? `<div style="font-size:13px;margin-top:7px">${rank}</div>` : ""}
       ${body}
-      ${footnote ? `<div style="font-size:10.5px;color:#7a8490;line-height:1.45;`
+      ${footnote ? `<div style="font-size:12px;color:#57606a;line-height:1.45;`
         + `margin-top:8px;border-top:1px solid #e3e7ea;padding-top:5px">`
         + `${escapeHtml(footnote)}</div>` : ""}
     </div>`;
@@ -2087,4 +2281,88 @@ function renderPopup(primary: string, type: string, rank: string, sections: Sect
 function escapeHtml(s: string): string {
   return String(s).replace(/[&<>"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
+}
+
+// The note beside a drawn hazard (see `note` in Props): to the right of its
+// outline, else to its left, below or above, whichever is clear of the
+// legend, the Basemap button, the zoom buttons, the guide button and any
+// pinned popup, and always on the map. With no outline, or no clear place
+// beside it, it goes to the top of the map. Placed again as the map moves,
+// as popups open and close, and as the note itself changes size.
+function ShapeNote({ map, ring, children }: {
+  map: Map | null; ring: [number, number][] | null; children: ReactNode;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const ringKey = ring ? JSON.stringify(ring) : "";
+  useLayoutEffect(() => {
+    const el = ref.current;
+    const host = el?.parentElement;
+    if (!el || !host) return;
+    const place = () => {
+      const W = host.clientWidth, H = host.clientHeight;
+      const w = el.offsetWidth, h = el.offsetHeight;
+      const hb = host.getBoundingClientRect();
+      const rel = (r: DOMRect): Rect => [r.left - hb.left, r.top - hb.top, r.right - hb.left, r.bottom - hb.top];
+      const blocks: Rect[] = [];
+      const add = (e: Element | null | undefined) => {
+        const r = e?.getBoundingClientRect();
+        if (r && r.width > 0 && r.height > 0) blocks.push(rel(r));
+      };
+      const legendEl = host.querySelector('[data-guide="legend"]');
+      add(legendEl);
+      add(host.querySelector('[aria-haspopup="menu"]'));          // the Basemap button
+      add(host.querySelector(".maplibregl-ctrl-top-right"));
+      add(host.querySelector('[aria-label="Start the guide"]'));
+      host.querySelectorAll(".maplibregl-popup").forEach((p) => {
+        if (p.querySelector(".maplibregl-popup-close-button") || p.classList.contains("guide-popup")
+            || p.classList.contains("route-docked")) add(p);
+      });
+      const M = 10;
+      const fit = (x: number, y: number): Rect => {
+        const l = Math.max(M, Math.min(W - w - M, x)), t = Math.max(M, Math.min(H - h - CREDITS_H - 4, y));
+        return [l, t, l + w, t + h];
+      };
+      const hits = (a: Rect, b: Rect) => a[0] < b[2] + 6 && a[2] > b[0] - 6 && a[1] < b[3] + 6 && a[3] > b[1] - 6;
+      const cands: Rect[] = [];
+      let shape: Rect | null = null;
+      if (map && ring && ring.length) {
+        const pts = ring.map((c) => map.project(c));
+        const xs = pts.map((q) => q.x), ys = pts.map((q) => q.y);
+        const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+        const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2, g = 16;
+        shape = [x0, y0, x1, y1];
+        cands.push(fit(x1 + g, cy - h / 2), fit(x0 - g - w, cy - h / 2), fit(cx - w / 2, y1 + g), fit(cx - w / 2, y0 - g - h));
+        // below or above, but slid sideways when the centred place is blocked,
+        // such as by the legend on a narrow map
+        for (const x of [x0, x1 - w, W - w - M]) cands.push(fit(x, y1 + g), fit(x, y0 - g - h));
+      }
+      const lgr = legendEl?.getBoundingClientRect();
+      cands.push(fit((W - w) / 2, M), fit(lgr ? lgr.right - hb.left + 14 : M, M), fit(W - w - 60, M));
+      const free = (r: Rect) => !blocks.some((b) => hits(r, b));
+      const best = cands.find((r) => free(r) && !(shape && hits(r, shape))) ?? cands.find(free) ?? cands[0];
+      el.style.left = `${best[0]}px`;
+      el.style.top = `${best[1]}px`;
+      el.style.visibility = "visible";
+    };
+    place();
+    map?.on("move", place);
+    map?.on("resize", place);
+    const sized = new ResizeObserver(place);
+    sized.observe(el);
+    sized.observe(host);
+    const container = map?.getContainer();
+    const popups = new MutationObserver(place);
+    if (container) popups.observe(container, { childList: true });
+    return () => {
+      map?.off("move", place);
+      map?.off("resize", place);
+      sized.disconnect();
+      popups.disconnect();
+    };
+  }, [map, ringKey]);
+  return (
+    <div ref={ref} style={{ position: "absolute", left: 0, top: 0, zIndex: 6, visibility: "hidden", maxWidth: 380 }}>
+      {children}
+    </div>
+  );
 }

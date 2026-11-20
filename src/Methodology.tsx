@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Box, CircularProgress, Drawer, IconButton, Stack, Typography } from "@mui/material";
+import CloseIcon from "@mui/icons-material/Close";
 import { marked } from "marked";
 import { BULLDOG_BLUE } from "./brand";
 
@@ -41,30 +42,28 @@ export default function Methodology({ file, title, onClose, width }: Props) {
 
   return (
     <Drawer anchor="right" open={!!file} onClose={onClose}
-      PaperProps={{ sx: { width, maxWidth: "95vw" } }}>
+      PaperProps={{
+        sx: { width, maxWidth: "95vw" },
+        // a dialog to screen readers, named by its title
+        role: "dialog", "aria-modal": true, "aria-labelledby": "notes-title",
+      } as object}>
       <Box sx={{ p: 3 }}>
         <Stack direction="row" alignItems="flex-start" justifyContent="space-between" sx={{ mb: 2 }}>
           <Box>
-            <Typography variant="h6">{title}</Typography>
-            <Typography variant="caption" color="text.secondary">
-              Rendered from docs/{file} in the repository
-            </Typography>
+            <Typography variant="h6" id="notes-title">{title}</Typography>
           </Box>
-          {/* Drawn as a path rather than set as a character. Figtree carries no
-              glyph for a close symbol, so a typed one falls back to whatever
-              the system supplies and can land as an empty box. */}
-          <IconButton size="small" onClick={onClose} aria-label="close">
-            <Box component="svg" viewBox="0 0 24 24" sx={{ width: 18, height: 18 }}
-              fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-              <line x1="5" y1="5" x2="19" y2="19" />
-              <line x1="19" y1="5" x2="5" y2="19" />
-            </Box>
+          {/* The same X icon as every other close button (an icon, not a
+              character: Figtree has no glyph for a close symbol). */}
+          <IconButton size="small" onClick={onClose} aria-label="Close the notes" title="Close the notes">
+            <CloseIcon aria-hidden="true" sx={{ fontSize: 18 }} />
           </IconButton>
         </Stack>
 
         {error && (
-          <Typography variant="body2" color="error">
-            Could not load docs/{file}: {error}
+          <Typography variant="body2" sx={{
+            px: 1.25, py: 0.75, borderRadius: 1.5, bgcolor: "#fff1c7", color: "#6b4b00", fontWeight: 700,
+          }}>
+            This note could not be opened. Try again.
           </Typography>
         )}
         {!html && !error && (

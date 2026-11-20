@@ -27,28 +27,31 @@ export const STYLES = styles as Record<string, FieldStyle>;
 export const METHODS = [
   {
     id: "log10",
-    label: "Log base 10",
+    // The ids (log10, geometric, quantile) stay as they were, since links
+    // and the class columns use them; only the names shown changed.
+    label: "Show only the extremes",
     // Plain words, because the guide reads these out as well as the panel.
     short: "A good place to start. Only the most extreme roads reach the top colors.",
-    help: "Equal breaks on the log of the score. The most selective of the three: use it when a handful of segments dwarf everything else and you want only those to stand out.",
+    help: "Only the few roads far above the rest get the top colors. Good when a handful of roads matter much more than all the others.",
   },
   {
     id: "geometric",
-    label: "Geometric",
+    label: "Spread across the middle",
     short: "Most roads land in the middle colors, and only a few at either end.",
-    help: "Breaks grow by a constant ratio, so classes get wider toward the top. Most roads gather in the middle colors, and both ends stay sparse: only a handful of roads score low enough for the first class or high enough for the last.",
+    help: "Each color covers a wider range than the one below it. Most roads land in the middle colors, and only a few at either end.",
   },
   {
     id: "quantile",
-    label: "Quantile",
+    label: "Same number in each color",
     short: "The same number of roads in every color. It shows order rather than size.",
-    help: "Equal counts per class, fitted on the scoring segments only. Shows rank rather than magnitude, so the top class is as common as every other.",
+    help: "Every color holds the same number of roads. It shows which roads rank higher, not by how much.",
   },
 ] as const;
 export type MethodId = (typeof METHODS)[number]["id"];
 
 // The classification every tab opens on, and the guide resets to (the user
-// chose Log base 10 on 2026-11-18; it was Geometric before).
+// chose log base 10, now shown as "Show only the extremes", on 2026-11-18;
+// it was geometric before).
 export const DEFAULT_METHOD: MethodId = "log10";
 
 // A score the map can draw: the class column is "<base>_<method>_class".
@@ -86,7 +89,7 @@ export const DETOUR_SCORES: Score[] = [
     base: "combined_band",
     compare: { more: "Scores a bigger weighted delay", most: "Scores the biggest weighted delay" },
     label: "Weighted delay score",
-    help: "Like extra travel time, but a delay counts for more when the trip was a quick one. Pushing a 5 minute trip out of reach matters more than adding the same minutes to an hour-long one.",
+    help: "Like extra travel time, but a delay counts for more when the trip was a quick one. Pushing a 5-minute trip out of reach matters more than adding the same minutes to an hour-long one.",
     raw: "combined_band_score",
   },
   {
@@ -116,7 +119,7 @@ export const ISOLATION_SCORES: Score[] = ISOLATION_CUTOFFS.map((c) => ({
   // Named for what a person loses, not for what the analysis counts: the
   // user found "Buildings lost within 15 minutes" unclear about what they
   // were lost from.
-  label: `Places out of reach within a ${c} minute drive`,
+  label: `Places out of reach within a ${c}-minute drive`,
   help: `For someone on a road near the hazard: of the homes, shops, schools and other `
     + `buildings they could drive to within ${c} minutes, the share they can no longer `
     + "get to once the hazard closes the roads it covers.",
@@ -152,7 +155,7 @@ export const COUNTIES: County[] = [
 
 // The words a hazard is described in, so a sentence can name it the way a
 // reader would: "with the flooded roads closed", "under the landslide".
-// "drawn" is an area someone drew with the drawing tool.
+// "drawn" is a hazard someone drew with "Draw a hazard".
 export type HazardKind = "flood" | "landslide" | "debris flow" | "drawn";
 export const HAZARD_WORDS: Record<HazardKind, {
   event: string;            // "before the flood"
@@ -173,8 +176,8 @@ export const HAZARD_WORDS: Record<HazardKind, {
     inside: "under the debris flow", closed: "the roads under the debris flow",
   },
   drawn: {
-    event: "the drawn area closed", area: "the drawn area",
-    inside: "inside the drawn area", closed: "the roads in the drawn area",
+    event: "the drawn hazard", area: "the drawn hazard",
+    inside: "inside the drawn hazard", closed: "the roads in the drawn hazard",
   },
 };
 
@@ -210,6 +213,9 @@ export interface Hazard extends HazardRun {
   id: string;               // the hazard file's name, e.g. flood_canton1
   label: string;            // as the dropdown shows it
   kind: HazardKind;
+  // A drawn hazard opened from someone else's link (not in this browser's
+  // own list): named "Shared hazard" rather than "Your hazard".
+  shared?: boolean;
   // One or two sentences on where the hazard comes from and what is special
   // about it, for the hazard's own popup and the guide.
   about: string[];
@@ -230,10 +236,10 @@ const HAZARD_LIST: Omit<Hazard, keyof HazardRun>[] = [
       "This is a landslide closing I-40 in the Pigeon River gorge.",
       // A quiet map here is not a sign that the closure is minor. The gorge is
       // remote, and closing I-40 matters for long trips, which a measure of
-      // what is within 15 minutes cannot see.
+      // what is within a short drive, even 30 minutes, cannot see.
       "The gorge is remote, so few buildings are within a short drive of it, and the map "
         + "stays quiet. Closing I-40 matters most for long trips, which a measure of what "
-        + "is within 15 minutes does not see.",
+        + "is within a short drive, even 30 minutes, does not see.",
     ] },
   { id: "little_sugar_creek1", label: "Flooding along Little Sugar Creek", kind: "flood",
     about: [
@@ -388,25 +394,25 @@ export const IMPROVE_NOTES: Record<TabId, { file: string; label: string }[]> = {
 // the user's request (2026-11-17); light gray was the default before.
 export const BASEMAPS = {
   lightgray: {
-    label: "Esri light gray",
+    label: "Light gray",
     tiles: ["https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}"],
     attribution: "Esri, HERE, Garmin, © OpenStreetMap contributors, and the GIS user community",
     maxzoom: 16,
   },
   darkgray: {
-    label: "Esri dark gray",
+    label: "Dark gray",
     tiles: ["https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}"],
     attribution: "Esri, HERE, Garmin, © OpenStreetMap contributors, and the GIS user community",
     maxzoom: 16,
   },
   streets: {
-    label: "Esri streets",
+    label: "Streets",
     tiles: ["https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}"],
     attribution: "Esri, HERE, Garmin, USGS, Intermap, INCREMENT P, NRCan, Esri Japan, METI, Esri China (Hong Kong), © OpenStreetMap contributors, and the GIS User Community",
     maxzoom: 19,
   },
   imagery: {
-    label: "Esri imagery",
+    label: "Aerial photos",
     tiles: ["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"],
     attribution: "Esri, Maxar, Earthstar Geographics, and the GIS User Community",
     maxzoom: 19,
@@ -451,9 +457,12 @@ export function classField(base: string, method: MethodId): string {
 // Seconds as the nearest sensible unit, for popups.
 export function humanSeconds(s: number): string {
   if (!isFinite(s) || s <= 0) return "0";
-  if (s < 90) return `${s.toFixed(0)} s`;
-  if (s < 5400) return `${(s / 60).toFixed(1)} min`;
-  return `${(s / 3600).toFixed(1)} h`;
+  if (s < 90) {
+    const n = Math.max(1, Math.round(s));
+    return `${n} ${n === 1 ? "second" : "seconds"}`;
+  }
+  if (s < 5400) return `${(s / 60).toFixed(1)} minutes`;
+  return `${(s / 3600).toFixed(1)} hours`;
 }
 
 // Overture's road classes in words a reader will recognize. Anything not
@@ -556,21 +565,6 @@ export function rankSentence(
   return `${words.more} than ${p}% of roads ${words.scope}`;
 }
 
-// A 0-1 share as a percentage, keeping enough precision to stay informative.
-//
-// These shares are measured against a statewide maximum that is a long way
-// above everything else, so rounding to whole percent turns almost every road
-// into "0%". A road the map has put in class 8 showing 0% reads as a bug, and
-// the real figure, small but not nothing, is the useful part.
-export function humanPercent(fraction: number): string {
-  const pct = fraction * 100;
-  if (!isFinite(pct) || pct <= 0) return "0%";
-  if (pct >= 10) return `${Math.round(pct)}%`;
-  if (pct >= 1) return `${pct.toFixed(1)}%`;
-  if (pct >= 0.01) return `${pct.toFixed(2)}%`;
-  return "under 0.01%";
-}
-
 // A share of places out of reach, for the legend and the guide: "0.3%",
 // "14%". Small shares keep a decimal so a low rank does not read as 0%.
 export function sharePct(fraction: number): string {
@@ -580,8 +574,14 @@ export function sharePct(fraction: number): string {
   if (p < 1) return `${p.toFixed(1)}%`;
   return `${Math.round(p)}%`;
 }
+// The same share in a sentence, in the legend's style: "about 0.4%",
+// "about 14%", or "under 0.1%" (never "about under 0.1%").
+export function aboutShare(fraction: number): string {
+  const p = sharePct(fraction);
+  return p.startsWith("under") ? p : `about ${p}`;
+}
 export function shareRange(r: [number, number] | null | undefined): string {
-  if (!r) return "no roads";
+  if (!r) return "none on this map";
   const [lo, hi] = r.map(sharePct);
   return lo === hi ? lo : `${lo.replace("%", "")} to ${hi}`.replace("under 0.1 to", "0 to");
 }

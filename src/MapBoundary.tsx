@@ -32,7 +32,7 @@ export default class MapBoundary extends React.Component<Props, State> {
           <Typography variant="h6" gutterBottom>The map could not start</Typography>
           <Typography variant="body2" color="text.secondary">
             {webgl
-              ? "This browser could not create a WebGL context. The map needs hardware acceleration, which is usually switched on under the browser's performance or system settings."
+              ? "This browser could not draw the map. Turn on hardware acceleration in the browser's settings, then reload the page."
               : this.state.error.message}
           </Typography>
         </Box>

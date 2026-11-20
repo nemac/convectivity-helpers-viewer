@@ -10,11 +10,12 @@
 // help and the classification lines in config.ts), so the guide and the
 // panel always say the same thing in the same words.
 import {
-  CUT_OFF_CLASS, DETOUR_SCORES, ISOLATION_CUTOFFS, HAZARDS, HAZARD_WORDS, Hazard, METHODS, PINCH_MAX_DETOUR_M,
-  PINCH_NO_ALTERNATIVE_M, STYLES, TabId, hazardsIn, humanMiles, humanNumber, humanPercent, milesInWords,
-  sharePct,
+  CUT_OFF_CLASS, DEFAULT_METHOD, DETOUR_SCORES, ISOLATION_CUTOFFS, HAZARDS, HAZARD_WORDS, Hazard, METHODS, PINCH_MAX_DETOUR_M,
+  PINCH_NO_ALTERNATIVE_M, STYLES, TabId, hazardsIn, humanMiles, humanNumber, milesInWords,
+  aboutShare, sharePct,
   rankSentence, splitNames,
 } from "./config";
+import { MAX_SQ_MI, ONDEMAND_LIVE, ROUTE_KEEP_DAYS } from "./ondemandApi";
 
 export interface Example {
   id: string;
@@ -110,7 +111,10 @@ export const nudge = (next: GuideStep["place"]) =>
 // The parts of the panel a step can point at. Each one is the `guide` name of
 // a card in App.tsx.
 export type PanelTarget =
-  "county" | "hazard" | "score" | "services" | "shows" | "classes" | "legend" | "methodology";
+  "county" | "hazard" | "score" | "services" | "shows" | "classes" | "legend" | "methodology"
+  // the "Draw a hazard" card (Functional isolation) and the alternate routes
+  // card (Pinch points), only when the tools are on (ONDEMAND_LIVE)
+  | "draw" | "routes";
 
 export interface GuideStep {
   title: string;
@@ -166,8 +170,9 @@ function panelSteps(tab: TabId, hazard?: Hazard): GuideStep[] {
     ] });
     const others = hazard ? hazardsIn(hazard.county).map((h) => lowerFirst(h.label)) : [];
     steps.push({ place: "panel", target: "hazard", title: "Pick a hazard", lines: [
-      "\"Choose a hazard\" lists the floods and landslides worked out for the county. Pick one "
-        + "and the map moves to it. Go ahead and try it. This guide will wait.",
+      "\"Choose a hazard\" lists the floods, landslides and debris flows looked at in this county"
+        + (ONDEMAND_LIVE ? ", and any hazards you have drawn. " : ". ")
+        + "Pick one and the map moves to it. Go ahead and try it. This guide will wait.",
       ...(hazard && others.length > 1
         ? [`In ${countyName(hazard)} County they are ${others.slice(0, -1).join(", ")} and ${others[others.length - 1]}.`]
         : []),
@@ -207,7 +212,8 @@ function panelSteps(tab: TabId, hazard?: Hazard): GuideStep[] {
   }
   steps.push({ place: "panel", target: "classes", title: "How roads are sorted into colors", lines: [
     "Every road gets a rank from 1 to 10. These three choices change where the line falls "
-      + "between one rank and the next. If you are not sure, leave it on Log base 10.",
+      + "between one rank and the next. If you are not sure, leave it on "
+      + `"${METHODS.find((m) => m.id === DEFAULT_METHOD)?.label}".`,
   ], items: METHODS.map((m) => ({ label: m.label, text: m.short })) });
   steps.push({ place: "panel", target: "legend", title: "Hide the lower ranks", lines: [
     "The legend sits on the map, under the Basemap button. Click \"Legend\" to fold it away "
@@ -225,6 +231,26 @@ function panelSteps(tab: TabId, hazard?: Hazard): GuideStep[] {
       : ["Check \"All buildings\" under the color key to show every building from Overture's map, "
           + "for a sense of who lives and works along a road."]),
   ] });
+  // The two tools, in the order the panel has them: just above Methodology.
+  if (ONDEMAND_LIVE && tab === "isolation") {
+    steps.push({ place: "panel", target: "draw", title: "Draw a hazard", lines: [
+      "The green \"Draw a hazard\" button lets you draw your own hazard, such as a flood or a "
+        + `road closure, anywhere in North Carolina, up to ${MAX_SQ_MI} square miles.`,
+      "Click each corner on the map, double-click to finish, and give it a name. It asks for an "
+        + "access code. In a minute or two the map shows which roads it cuts off within a 10-minute drive.",
+      `Your hazards are kept in this browser for ${ROUTE_KEEP_DAYS} days, under "Your hazards" and in `
+        + "\"Choose a hazard\".",
+    ] });
+  }
+  if (ONDEMAND_LIVE && tab === "pinch") {
+    steps.push({ place: "panel", target: "routes", title: "Alternate routes", lines: [
+      "Click any road on the map, then \"Get alternate and truck-safe routes\" in its popup. "
+        + "It asks for an access code.",
+      "You see up to three alternate routes for when that road is closed, with the extra time and "
+        + "distance, directions, and whether a semi can use each one.",
+      `You can download them, share a link, or save them under "Your alternate routes" for ${ROUTE_KEEP_DAYS} days.`,
+    ] });
+  }
   steps.push({ place: "panel", target: "methodology", title: "Want the details?", lines: [
     "The link under \"Methodology\" opens a write-up of how these numbers were worked out. "
       + "It is written for readers who want the technical details.",
@@ -232,15 +258,15 @@ function panelSteps(tab: TabId, hazard?: Hazard): GuideStep[] {
   steps.push({ place: "panel", title: "Now try it yourself", lines: [
     "Move your mouse over any road to see its numbers. Click a road to keep them on the screen.",
     "The map starts on a dark gray background. The \"Basemap\" button with the globe, at the "
-      + "top left of the map, picks another one. Esri imagery, for example, shows aerial photos.",
+      + "top left of the map, picks another one. \"Aerial photos\", for example, shows the ground from above.",
     ...(tab === "isolation"
       ? [
           "Move your mouse over the hatched area to see what the hazard is and what it cuts off. "
             + "While the mouse is there, every road and building it cuts off or closes lights up "
             + "in yellow. Click the hatched area to keep it lit.",
           `The button with four arrows on the map zooms out to everything within ${hazard?.bufferMiles ?? 30} `
-            + "miles of the hazard, which is the area this run covers. The shaded part of the map "
-            + "beyond it was not part of the run.",
+            + "miles of the hazard. The shaded part of the map is farther away than that, and "
+            + "was not looked at.",
         ]
       : tab === "detour"
         ? ["The button with four arrows on the map zooms out to show the whole county."]
@@ -248,8 +274,8 @@ function panelSteps(tab: TabId, hazard?: Hazard): GuideStep[] {
             + "four arrows on the map shows the whole state."]),
     "The tabs at the top of the page switch between Functional isolation, Pinch points & alternate routing and "
       + "Access to services.",
-    "To see this guide again later, click \"Start the guide\" at the bottom of the map. After a "
-      + "few seconds it shrinks to the question mark at the bottom left.",
+    "To see this guide again later, click \"Start the guide\" at the bottom of the map. After "
+      + "15 seconds it shrinks to the question mark at the bottom left.",
   ] });
   return steps;
 }
@@ -296,7 +322,7 @@ function isolationSteps(hazard: Hazard | undefined, props: Record<string, any> |
           ? `${w.inside} and closed.` : "cut off completely.")
       : isFinite(cls) && cls >= 1 && cls <= 10
         ? `This road is drawn ${drawnAs(cls)}. It ranks ${cls} out of 10`
-          + (isFinite(loss) ? `: from here, ${sharePct(loss)} of the places within a ${minutes} `
+          + (isFinite(loss) ? `: from here, ${sharePct(loss)} of the places within a ${minutes}-`
             + "minute drive are out of reach." : ", and 10 is the biggest loss.")
         : "Every road is ranked from 1 to 10, and 10 is the biggest loss.",
     "Thick orange roads have lost the most of the places within a short drive. Thin blue "
@@ -321,17 +347,17 @@ function isolationSteps(hazard: Hazard | undefined, props: Record<string, any> |
     if (!isFinite(before) || !isFinite(lost) || before <= 0) continue;
     if (c === minutes) {
       numbers.push(lost > 0
-        ? `For someone on ${name}, about ${humanPercent(lost / before)} of the homes, shops, schools `
+        ? `For someone on ${name}, ${aboutShare(lost / before)} of the homes, shops, schools `
           + `and other buildings they could drive to within ${c} minutes are now out of reach: `
           + `${plural(before, "building", "buildings")} before ${w.event}, ${humanNumber(before - lost)} `
           + `with ${w.closed} closed.`
-        : `Within ${c} minutes of here you can reach ${plural(before, "building", "buildings")}, `
-          + `and ${w.event} does not change that.`);
+        : `Someone on ${name} can reach ${plural(before, "building", "buildings")} within ${c} `
+          + `minutes, and ${w.event} does not change that.`);
     } else {
       numbers.push(lost > 0
-        ? `Within ${c} minutes you lose ${humanNumber(lost)} of ${plural(before, "building", "buildings")}, `
-          + `about ${humanPercent(lost / before)}.`
-        : `Within ${c} minutes you lose none of ${plural(before, "building", "buildings")}.`);
+        ? `Within ${c} minutes they lose ${humanNumber(lost)} of ${plural(before, "building", "buildings")}, `
+          + `${aboutShare(lost / before)}.`
+        : `Within ${c} minutes they lose none of ${plural(before, "building", "buildings")}.`);
     }
   }
   if (numbers.length === 0) {
