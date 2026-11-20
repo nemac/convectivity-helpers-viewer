@@ -421,6 +421,49 @@ export const BASEMAPS = {
 export type BasemapKey = keyof typeof BASEMAPS;
 export const DEFAULT_BASEMAP: BasemapKey = "darkgray";
 
+// The light basemaps. The QGIS ramp keeps its lightness between L*40 and L*70 so it
+// reads on dark gray, but on these its upper ranks fall to 1.9:1, under the 3:1
+// that WCAG 1.4.11 asks of map lines. So the viewer draws darker copies here.
+export const LIGHT_BASEMAPS: ReadonlySet<BasemapKey> = new Set<BasemapKey>(["lightgray", "streets"]);
+export const isLightBasemap = (b: BasemapKey) => LIGHT_BASEMAPS.has(b);
+
+// Darker copies of the ten ramp colors in styles.json, keyed by the exact string
+// there, for the light basemaps only. styles.json stays as QGIS has it. They keep
+// the ramp's hue order (blue, purple, magenta, red, orange). Measured at the roads'
+// 95% opacity against the darkest grounds the light maps show under roads: Esri
+// Streets' tan land, rgb(222, 212, 176), which covers most of the mountain
+// counties, and its water, rgb(191, 217, 242), around Wilmington. Every rank is at
+// least 3.09:1 on both, 3.72:1 on light gray and 4.5:1 on white. Reaching that on
+// the tan caps lightness near L*48, so ranks 8 to 10 sit level there and differ
+// by hue alone. Neighbors are at least 10 CIEDE2000 apart and at least 13.9 from
+// the class 11 red, which is also darker, wider and cased in white. Rank 10 stays
+// a burnt orange, not a brown. Update this table whenever make_qml.py in the
+// analysis repo changes the ramp: any color not listed here (class 11 among them)
+// is drawn unchanged.
+const LIGHT_RAMP: Record<string, string> = {
+  "rgb(1, 99, 153)": "#004a64",
+  "rgb(11, 100, 201)": "#005497",
+  "rgb(123, 88, 210)": "#6038c7",
+  "rgb(185, 71, 187)": "#9518b7",
+  "rgb(224, 59, 155)": "#b5008e",
+  "rgb(246, 64, 120)": "#c60066",
+  "rgb(255, 82, 99)": "#db004c",
+  "rgb(255, 105, 89)": "#ea032a",
+  "rgb(255, 124, 80)": "#d63601",
+  "rgb(255, 141, 73)": "#b65500",
+};
+// The color a road class is drawn in on this basemap. The map, the legend, the
+// popups and the guide all use it, so they always agree.
+export const roadColor = (color: string, basemap: BasemapKey) =>
+  isLightBasemap(basemap) ? LIGHT_RAMP[color] ?? color : color;
+// A popup's color swatch carries its QGIS color in data-qgis (swatch() in
+// MapView.tsx), so a popup already open can follow a basemap switch.
+export function recolorSwatches(root: ParentNode | null | undefined, basemap: BasemapKey) {
+  root?.querySelectorAll<HTMLElement>("[data-qgis]").forEach((el) => {
+    el.style.background = roadColor(el.dataset.qgis ?? "", basemap);
+  });
+}
+
 // Overture's buildings, for context on every tab, off until the reader ticks
 // the box. Read straight from Overture's own public PMTiles in the browser,
 // as the landslide viewer does, and drawn in the same colors: a pale yellow

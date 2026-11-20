@@ -46,6 +46,9 @@ export default function Methodology({ file, title, onClose, width }: Props) {
         sx: { width, maxWidth: "95vw" },
         // a dialog to screen readers, named by its title
         role: "dialog", "aria-modal": true, "aria-labelledby": "notes-title",
+        // the file shown, so feedback left in the reader says which note
+        // it is about and Show in the inbox can tell whether it is open
+        "data-doc": file ?? undefined,
       } as object}>
       <Box sx={{ p: 3 }}>
         <Stack direction="row" alignItems="flex-start" justifyContent="space-between" sx={{ mb: 2 }}>

@@ -54,6 +54,21 @@
          radio or select; the ring goes on the visible part instead. */
       .MuiCheckbox-root input:focus-visible, .MuiRadio-root input:focus-visible,
       .MuiSwitch-input:focus-visible, .MuiSlider-thumb input:focus-visible { outline: none; }
+      /* A switch clips its thumb's ring, so the ring goes round the whole
+         switch instead. */
+      .MuiSwitch-switchBase.Mui-focusVisible { outline: none !important; }
+      .MuiSwitch-root:has(.Mui-focusVisible) { outline: 2px solid #003DA5; outline-offset: 0; border-radius: 999px; }
+      /* The map fills its box, which clips anything outside it, so its ring
+         is drawn just inside the edge, with a white line inside that for the
+         dark basemaps. */
+      canvas.maplibregl-canvas:focus-visible { outline: none; }
+      .maplibregl-map:has(canvas.maplibregl-canvas:focus-visible)::after {
+        content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 3;
+        border: 3px solid #003DA5; box-shadow: inset 0 0 0 2px #fff;
+      }
+      /* The map's credits link is underlined, so it is not told apart by
+         color alone. */
+      .maplibregl-ctrl-attrib a { text-decoration: underline; }
       /* The guide popup on a first visit, in Night Sky (#003865 in src/brand.ts).
          The tip is recolored on whichever side MapLibre has anchored it. */
       /* With the same 2 px white rim and white tip as the hazard's popup, so

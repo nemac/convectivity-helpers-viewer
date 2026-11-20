@@ -5,14 +5,14 @@ import {
 } from "@mui/material";
 import MapView, { Focus, PENDING_RUN, RunFiles } from "./MapView";
 import {
-  AreasCard, DrawCard, DrawHint, MapBar, NameDialog, RemoveButton, RoutesBox, RoutesCard, ShareButton,
+  AreasCard, DRAW_BUTTON, DRAW_INK, DrawCard, DrawHint, MapBar, NameDialog, RemoveButton, RoutesBox, RoutesCard, ShareButton,
   ShareIconButton, ShareNote, areaLine, areaLink, useShareNote,
 } from "./OnDemand";
 import {
   ApiError, DrawCheck, fiApi, FiLimits, RUN_CUTOFF, RunPosted, RunStatus, SavedArea, api, checkShape, finishWhy,
   expiryWords, loadAreas, rememberCode, runHazard, saveAreas, unexpired,
   ONDEMAND_LIVE, ROUTES_CHANGED, routesApi, ROUTE_ID, TARGET_SWITCHABLE, useApiTarget, SavedRoute, SharedRoutes, loadRoutes, newSavedRoute, saveRoutes,
-  shareLink, sharedRoute, unexpiredRoutes,
+  shareLink, sharedRoute, unexpiredRoutes, forgetCode, outerRings, rememberedCode, RouteResult,
 } from "./ondemandApi";
 import LocalFireDepartmentIcon from "@mui/icons-material/LocalFireDepartment";
 import HealthAndSafetyIcon from "@mui/icons-material/HealthAndSafety";
@@ -25,7 +25,16 @@ import LayersIcon from "@mui/icons-material/Layers";
 import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
 import KeyboardArrowUpIcon from "@mui/icons-material/KeyboardArrowUp";
 import MapBoundary from "./MapBoundary";
+import { focusLater, mapCanvas } from "./focus";
 import Methodology from "./Methodology";
+// Imported before this file's own top-level code runs, which is what takes
+// #feedback out of the hash first: ARRIVED_COLD and urlState below then see
+// the address without it, so a tester link that holds only #feedback opens
+// like a first visit, guide and all.
+import {
+  FeedbackInbox, FeedbackInboxPill, FeedbackLayer, FeedbackStrip, FeedbackSwitch, ReportLink, compareDrawn,
+  compareRoutes, drawnHazardReport, useReportSource, DrawnHazardContext, RebuildState, ReportContext,
+} from "./feedback";
 import { BULLDOG_BLUE, NIGHT_SKY, ORG_LOGO_SCREEN, ORG_NAME, ORG_URL } from "./brand";
 import {
   BASEMAPS, BasemapKey, COUNTIES, CUT_OFF_CLASS, DEFAULT_BASEMAP, DEFAULT_COUNTY, DEFAULT_CUTOFF, DEFAULT_METHOD,
@@ -33,7 +42,7 @@ import {
   MIN_RANKED, MethodId, NC_BOUNDS, NC_CENTER, NC_ZOOM, PINCH_SCORES, PINCH_TILES,
   STYLES, Score, TILES_BASE, TabId, classField, defaultHazard, hazardView, hazardsIn, Hazard,
   latestOvertureRelease, overtureBuildingsUrl, BUILDING_COLOR, BUILDING_OUTLINE, OVERTURE_BUILDINGS_URL,
-  shareRange,
+  roadColor, shareRange,
   SERVICE_INK, SERVICE_KINDS, ServiceKind, HAZARD_BUILDING_COLORS, HazardBuildingStatus,
 } from "./config";
 import {
@@ -192,13 +201,21 @@ export default function App() {
   const [left, setLeft] = useState(() =>
     Math.min(MAX_LEFT, Math.max(MIN_LEFT, Number(fromUrl("left", String(LEFT))) || LEFT)));
   const [doc, setDoc] = useState<{ file: string; label: string } | null>(null);
+  // Show in the feedback inbox opens the note an item was left in, by its
+  // file name; only the viewer's own notes are found.
+  const openDocFile = React.useCallback((file: string) => {
+    const all = [...Object.values(METHODOLOGY).flat(), ...Object.values(IMPROVE_NOTES).flat()];
+    const d = all.find((x) => x.file === file);
+    if (d) setDoc(d);
+  }, []);
   const [mapEmpty, setMapEmpty] = useState(false);
   // The "No data here" notice can be closed (the user asked for an X). It
   // comes back the next time the map goes from having data to having none.
   const [emptyClosed, setEmptyClosed] = useState(false);
   React.useEffect(() => { if (!mapEmpty) setEmptyClosed(false); }, [mapEmpty]);
   const closeEmpty = (
-    <Box component="button" type="button" aria-label="Close" title="Close" onClick={() => setEmptyClosed(true)}
+    <Box component="button" type="button" aria-label="Close" title="Close"
+      onClick={() => { setEmptyClosed(true); focusLater(() => mapCanvas(mapAreaRef.current)); }}
       sx={{
         position: "absolute", top: 6, right: 6, width: 30, height: 30, border: "none", borderRadius: "50%",
         bgcolor: "transparent", color: "#57606a", cursor: "pointer", display: "flex",
@@ -320,6 +337,8 @@ export default function App() {
   const cornersRef = useRef<[number, number][]>([]);
   const [drawn, setDrawn] = useState<[number, number][] | null>(null);
   const [naming, setNaming] = useState(false);
+  // the Draw a hazard button, which gets focus back when the naming dialog closes
+  const drawButtonRef = useRef<HTMLButtonElement | null>(null);
   const [limits, setLimits] = useState<FiLimits | null>(null);
   const [limitsFailed, setLimitsFailed] = useState(false);
   // Where the two tools send their work: AWS, or on the dev server at
@@ -361,10 +380,18 @@ export default function App() {
   // closed before then (say by switching tabs) was never seen, so it is not
   // remembered as closed.
   const guideSeen = useRef(false);
+  // the "Start the guide" button, and whether it takes focus when the guide closes
+  const launcherRef = useRef<HTMLButtonElement | null>(null);
+  const refocusLauncher = useRef(false);
 
   // Closing the guide by any route (its close button, Done, a second click
   // away, or a change in the panel) is remembered, and leaves the pill.
   const endGuide = () => {
+    // Closed from inside the guide (its X, Done or Escape): keyboard focus
+    // goes to the "Start the guide" button that takes its place, rather
+    // than to the top of the page.
+    const a = document.activeElement;
+    if (guide && (!a || a === document.body || a.closest("[data-guide-dialog]"))) refocusLauncher.current = true;
     if (guide && guideSeen.current) {
       rememberGuideClosed();
       setLauncher("pill");
@@ -385,6 +412,12 @@ export default function App() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [guideOpen]);
+
+  React.useEffect(() => {
+    if (guide || !refocusLauncher.current) return;
+    refocusLauncher.current = false;
+    focusLater(() => launcherRef.current);
+  }, [guide]);
 
   React.useEffect(() => {
     if (guide || launcher !== "pill") return;
@@ -554,6 +587,15 @@ export default function App() {
         id: st.run_id, hazard: runHazard(st, hz, study),
         files: { roads: st.files.roads, hazard: hz, buildings: st.files.hazard_buildings },
       });
+      // a Rebuild from the feedback inbox waiting for these results
+      const w = rebuildWatch.current;
+      if (w && w.runId === st.run_id) {
+        const c = compareDrawn(w.ctx.summary, st.stats);
+        endRebuild(st.run_id, {
+          state: "done", differs: !c.same,
+          note: `${w.opened ? "Opened the saved result." : "Worked out again."} ${c.note}`,
+        });
+      }
       setDrawn(null);
       if (flyNext.current) {
         if (tabNow.current === "isolation") setFlyNonce((n) => n + 1);
@@ -564,6 +606,7 @@ export default function App() {
       if (activeRun.current === st.run_id) {
         setNotice({ text: "The results for this hazard could not be read. Try picking it again." });
       }
+      endRebuild(st.run_id, { state: "failed", note: "Its results could not be read. Try Rebuild again." });
     }
   };
 
@@ -572,6 +615,9 @@ export default function App() {
   // notice with a button to show it.
   const onRunStatus = (st: RunStatus, fromPoll: boolean) => {
     setAreas((list) => list.map((a) => (a.run_id === st.run_id ? { ...a, status: st.status } : a)));
+    if (st.status === "failed") {
+      endRebuild(st.run_id, { state: "failed", note: `It could not be worked out. ${st.error ?? ""}`.trim() });
+    }
     if (st.run_id === activeRun.current) {
       setRunStatus(st);
       if (st.status === "done") loadResults(st);
@@ -583,6 +629,7 @@ export default function App() {
     }
   };
   const onRunGone = (id: string) => {
+    endRebuild(id, { state: "failed", note: "It is not on the server in use now." });
     // With the dev server's toggle, an area not made on the target in use is
     // not found there; it stays in the list for when the toggle goes back.
     setAreas((list) => list.filter((a) => a.run_id !== id
@@ -616,6 +663,15 @@ export default function App() {
   // "Link copied" (or the link to copy by hand) under the hazard pulldown,
   // after its share icon beside one of the reader's areas
   const hazardShare = useShareNote();
+  // A published hazard's link opens it with the drive time and grouping on show.
+  const sharePublished = (h: Hazard) => {
+    setHazardMenu(false);
+    hazardShare.share(h.label, shareLink(
+      { tab: "isolation", county, hazard: h.id, cutoff: String(cutoff), method }, false));
+  };
+  // the hazard pulldown, for focus to come back to
+  const hazardPickRef = useRef<HTMLDivElement | null>(null);
+  const toHazardPicker = () => focusLater(() => hazardPickRef.current?.querySelector<HTMLElement>('[role="combobox"]'));
 
   // The area being shown: read its status, and its results when done.
   React.useEffect(() => {
@@ -724,6 +780,180 @@ export default function App() {
   const keepShape = naming ? drawn
     : runOn && !runReady ? (runArea?.geometry ?? drawn) : null;
   const runName = runReady?.hazard.label ?? runStatus?.name ?? runArea?.name ?? "loading";
+
+  // ---- "Something look wrong?" on a drawn hazard's results ----
+  // The copy a tester's report carries: the outline as drawn (from this
+  // browser's list, else the results' own), its name, where it was worked
+  // out, and the numbers in the strip under the map. Built only when asked:
+  // from the link in that strip, or in feedback mode from a click on the
+  // drawn hazard's roads or outline.
+  const statsRef = useRef<HTMLDivElement | null>(null);
+  const buildRunReport = () => {
+    if (!runReady) return null;
+    const st = runStatus?.run_id === runReady.id ? runStatus : null;
+    const rings = outerRings(runReady.files.hazard);
+    const ring = runArea?.geometry?.length ? runArea.geometry
+      : rings.length ? rings.reduce((a, r) => (r.length > a.length ? r : a)) : null;
+    if (!ring) return null;
+    const h = runReady.hazard;
+    return drawnHazardReport({
+      run_id: runReady.id, name: h.label, ring, drive_time: RUN_CUTOFF,
+      target: runArea?.target ?? apiTarget,
+      drawn_at: st?.created_at ?? runArea?.created_at ?? "", expires_at: st?.expires_at ?? runArea?.expires_at ?? "",
+      stats: st?.stats ?? {
+        isolated_buildings: h.isolatedBuildings, hazard_buildings: h.hazardBuildings,
+        isolated_segments: h.isolatedRoads, closed_roads: h.closedRoads,
+        isolated_road_m: h.isolatedRoadM, closed_road_m: h.closedRoadM, segments_out: h.roads,
+      },
+    });
+  };
+  useReportSource("drawn", RUN_REPORT_LAYERS, runReady ? buildRunReport : null);
+
+  // ---- Rebuild, from the feedback inbox (dev server only) ----
+  // A reported drawn hazard is opened while the server in use still has it,
+  // and otherwise worked out again from its saved outline and name, with the
+  // usual progress on the map; a reported set of routes is opened from the
+  // server's copy, or asked for again for the same road and spot. Either way
+  // the inbox hears how it compares with what the tester saw. On AWS (live)
+  // this uses the access code like any other run or route request.
+  const rebuildWatch = useRef<{
+    runId: string; ctx: DrawnHazardContext; opened: boolean; tell: (r: RebuildState) => void;
+  } | null>(null);
+  const endRebuild = (runId: string, r: RebuildState) => {
+    const w = rebuildWatch.current;
+    if (!w || w.runId !== runId) return;
+    rebuildWatch.current = null;
+    w.tell(r);
+  };
+  // Only one drawn hazard can be on the map, so only one Rebuild can wait for
+  // its results. A newer one takes over, and the older item is told so its
+  // row does not stay "working" for the rest of the visit.
+  const watchRebuild = (next: NonNullable<typeof rebuildWatch.current>) => {
+    const old = rebuildWatch.current;
+    rebuildWatch.current = next;
+    if (old) {
+      old.tell({ state: "failed", note: "Another Rebuild started before this one finished. Press Rebuild again to see this one." });
+    }
+  };
+  const failText = (e: unknown) => (e instanceof ApiError ? e.message : "Something went wrong. Please try again.");
+  const targetName = (t: string) => (t === "local" ? "This computer" : "AWS (live)");
+  const rebuildNow = async (ctx: ReportContext, tell: (r: RebuildState) => void) => {
+    if (!import.meta.env.DEV) return;
+    // A result is kept only on the server it was made on. Asking the other one
+    // would call it expired, spend a daily run or click there, and compare
+    // against a different server's answer, so the reader switches first.
+    if (ctx.target !== targetNow.current) {
+      tell({
+        state: "failed",
+        // The dev server never falls back to AWS by itself, so a mismatch
+        // means the switch was set by hand. The tools on this computer not
+        // answering is caught by api() below, with the Draw card's words.
+        note: TARGET_SWITCHABLE
+          ? `The tester used ${targetName(ctx.target)}. Set the switch to ${targetName(ctx.target)}, then press Rebuild again.`
+          : `The tester used ${targetName(ctx.target)}, which this viewer does not send work to.`,
+      });
+      return;
+    }
+    endGuide();
+    setDrawing(false);
+    setNotice(null);
+    if (ctx.type === "drawn_hazard") {
+      setTab("isolation");
+      let kept: RunStatus | null = null;
+      try {
+        kept = await api<RunStatus>(fiApi(), `/runs/${encodeURIComponent(ctx.run_id)}`);
+      } catch (e) {
+        if (!(e instanceof ApiError && e.status === 404)) { tell({ state: "failed", note: failText(e) }); return; }
+      }
+      if (kept) {
+        // Already the area on the map: picking it again changes nothing, so no
+        // status or results are read again and the watch would never end.
+        // Answer from the status just fetched instead (a run still going is
+        // finished by the usual poll, which ends the watch).
+        const shown = activeRun.current === ctx.run_id;
+        watchRebuild({ runId: ctx.run_id, ctx, opened: true, tell });
+        tell({ state: "working", note: "Still saved. Opening it..." });
+        if (shown && kept.status === "done" && kept.stats) {
+          const c = compareDrawn(ctx.summary, kept.stats);
+          endRebuild(ctx.run_id, { state: "done", differs: !c.same, note: `Opened the saved result. ${c.note}` });
+        } else if (shown && kept.status === "failed") {
+          endRebuild(ctx.run_id, { state: "failed", note: `It could not be worked out. ${kept.error ?? ""}`.trim() });
+        }
+        pickRun(ctx.run_id);
+        return;
+      }
+      const code = rememberedCode("fi");
+      if (!code) {
+        tell({ state: "failed", note: "No drawing access code is remembered here. Draw a hazard once, or set VITE_ONDEMAND_LOCAL_CODE, then try again." });
+        return;
+      }
+      const ring = ctx.geometry.coordinates[0].slice(0, -1);
+      tell({ state: "working", note: "It has expired, so it is being worked out again..." });
+      const sentTo = targetNow.current;
+      try {
+        const res = await api<RunPosted>(fiApi(), "/runs", {
+          code, name: ctx.name.slice(0, 60), geometry: { type: "Polygon", coordinates: [[...ring, ring[0]]] },
+        });
+        rememberCode(code);
+        setLimits((l) => (l ? { ...l, runs_left: res.runs_left, big_left: res.big_left } : l));
+        setAreas((list) => [...list.filter((a) => a.run_id !== res.run_id), {
+          run_id: res.run_id, name: res.name, created_at: res.created_at, expires_at: res.expires_at,
+          county: res.county, status: "running", geometry: ring,
+          ...(TARGET_SWITCHABLE ? { target: sentTo } : {}),
+        }]);
+        watchRebuild({ runId: res.run_id, ctx, opened: false, tell });
+        tell({ state: "working", note: `It had expired, so it is being worked out again as "${res.name}".` });
+        flyNext.current = true;
+        setRunId(res.run_id);
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 401) forgetCode();
+        tell({ state: "failed", note: failText(e) });
+      }
+      return;
+    }
+    // alternate routes
+    setTab("pinch");
+    const open = (res: RouteResult, at: string, until: string | undefined, how: string) => {
+      const saved = newSavedRoute(ctx.road_name, ctx.road_name, ctx.overture_id, ctx.lnglat,
+        { overture_id: ctx.overture_id, road_name: ctx.road_name }, res);
+      setOpenRoutes({
+        key: `rebuild:${Date.now()}`,
+        saved: { ...saved, saved_at: at, ...(until ? { expires_at: until } : {}), shared: true, rebuilt: true },
+      });
+      setTouched(true);
+      const c = compareRoutes(ctx, res);
+      tell({ state: "done", differs: !c.same, note: `${how} ${c.note}` });
+    };
+    if (ctx.route_id) {
+      try {
+        const { road: _road, ...result } = await api<SharedRoutes>(routesApi(), `/routes/saved/${ctx.route_id}`);
+        open(result, result.created_at, result.expires_at, "Opened the saved routes.");
+        return;
+      } catch (e) {
+        if (!(e instanceof ApiError && e.status === 404)) { tell({ state: "failed", note: failText(e) }); return; }
+      }
+    }
+    const code = rememberedCode("routes");
+    if (!code) {
+      tell({ state: "failed", note: "No routes access code is remembered here. Get routes once in a road's popup, or set VITE_ROUTES_LOCAL_CODE, then try again." });
+      return;
+    }
+    tell({ state: "working", note: "They have expired, so they are being worked out again..." });
+    try {
+      const res = await api<RouteResult>(routesApi(), "/routes",
+        { code, overture_id: ctx.overture_id, lon: ctx.lnglat[0], lat: ctx.lnglat[1] });
+      rememberCode(code, "routes");
+      open(res, res.created_at ?? new Date().toISOString(), res.expires_at, "Worked out again.");
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 401) forgetCode("routes");
+      tell({ state: "failed", note: failText(e) });
+    }
+  };
+  // handed to feedback once; it always runs the latest version
+  const rebuildRef = useRef(rebuildNow);
+  rebuildRef.current = rebuildNow;
+  const onRebuild = React.useCallback(
+    (ctx: ReportContext, tell: (r: RebuildState) => void) => { rebuildRef.current(ctx, tell); }, []);
 
   // Where the guide's card sits on the map during the panel steps: level with
   // the card it is pointing at, kept inside the map, with its arrow on that
@@ -928,7 +1158,10 @@ export default function App() {
             sits above 10, as the last value of the scale (the user asked
             for it there rather than set apart). It never fades with the
             slider, which never hides it. */}
-        {cutOffStyle && <LegendRow c={cutOffStyle} label="Cut off completely or closed" on />}
+        {/* Each swatch in the color the map draws on this basemap (darker
+            on the light ones; see roadColor). */}
+        {cutOffStyle && <LegendRow c={{ ...cutOffStyle, color: roadColor(cutOffStyle.color, basemap) }}
+          label="Cut off completely or closed" on />}
         {/* The ranks, with the slider standing beside them: each rank's
             row lines up with a stop on the slider, so the handle sits
             beside the lowest rank still shown. Moving it up hides the
@@ -937,7 +1170,7 @@ export default function App() {
         <Stack direction="row" spacing={1.5} alignItems="flex-start">
           <Box sx={{ minWidth: 0 }}>
             {[...ranks].reverse().map((c) => (
-              <LegendRow key={c.value} c={c}
+              <LegendRow key={c.value} c={{ ...c, color: roadColor(c.color, basemap) }}
                 on={c.value >= minClass && !(rankRanges && !rankRanges[c.value - 1])}
                 label={rankRanges ? `${c.label}: ${shareRange(rankRanges[c.value - 1])}` : c.label} />
             ))}
@@ -1013,6 +1246,26 @@ export default function App() {
     border: "1px solid #dfe3e8", zIndex: 5,
   } as const;
 
+  const barRef = useRef<HTMLDivElement>(null);
+  const spacerRef = useRef<HTMLDivElement>(null);
+  const feedbackRef = useRef<HTMLDivElement>(null);
+  const orgRef = useRef<HTMLParagraphElement>(null);
+  const feedbackBelow = useControlsBelow(barRef, spacerRef, feedbackRef, orgRef);
+
+  // Feedback mode's switch, shown only to someone who opened a feedback link
+  // (and always on the dev server), and the dev-only inbox pill, which
+  // renders nothing in a production build. Kept as one group so it moves
+  // as one: in the title bar where there is room, under it where not.
+  // Nothing in it for everyone else, and then it takes no room (:empty).
+  const feedbackControls = (
+    <Box ref={feedbackRef} sx={{
+      display: "flex", alignItems: "center", gap: 2, flexShrink: 0, "&:empty": { display: "none" },
+    }}>
+      <FeedbackSwitch />
+      <FeedbackInboxPill />
+    </Box>
+  );
+
   return (
     <Box sx={{ display: "flex", flexDirection: "column", height: "100vh" }}>
       {/* Title bar across the full width, above both the panel and the map.
@@ -1021,15 +1274,18 @@ export default function App() {
       {/* On narrow screens the bar wraps, putting the tabs on a second row
           rather than letting the title run into them or the tabs run off the
           right edge. */}
-      <Box component="header" sx={{
-        bgcolor: NIGHT_SKY, display: "flex", alignItems: "center", gap: 2,
+      <Box component="header" sx={{ bgcolor: NIGHT_SKY, flexShrink: 0 }}>
+      <Box ref={barRef} sx={{
+        display: "flex", alignItems: "center", gap: 2,
         flexWrap: { xs: "wrap", md: "nowrap" }, rowGap: 1,
-        px: 2.5, py: 1.25, flexShrink: 0,
+        px: 2.5, py: 1.25,
       }}>
         <Link href={ORG_URL} target="_blank" rel="noopener"
           sx={{ display: "block", lineHeight: 0, flexShrink: 0 }}>
           <Box component="img" src={new URL(ORG_LOGO_SCREEN, document.baseURI).href}
-            alt={ORG_NAME}
+            // the words in the logo itself, so a screen reader names the
+            // link by what it shows
+            alt="UNC Asheville NEMAC, National Environmental Mapping & Applications Center (opens in a new tab)"
             // Sized by a whole-pixel height rather than a width: the logo's
             // fine small capitals and hairline divider look soft when its
             // edges land between screen pixels.
@@ -1046,7 +1302,7 @@ export default function App() {
           {/* Whole-pixel line heights keep the title bar an even number of
               pixels tall however the title wraps, so the centred logo lands
               on whole pixels and stays sharp. */}
-          <Typography sx={{ color: "#fff", fontWeight: 700, fontSize: 19, lineHeight: "24px" }}>
+          <Typography component="h1" sx={{ color: "#fff", fontWeight: 700, fontSize: 19, lineHeight: "24px", m: 0 }}>
             Road network connectivity
           </Typography>
           <Typography sx={{ color: "rgba(255,255,255,0.78)", fontSize: 13, lineHeight: "20px" }}>
@@ -1064,7 +1320,7 @@ export default function App() {
             screen readers treat them as tabs. A third tab is one more entry
             in NAV_TABS. */}
         <Tabs
-          value={tab}
+          value={tab} aria-label="Map views"
           onChange={(_, v) => { endGuide(); setDrawing(false); setTab(v); }}
           sx={{
             // gaps kept tight so the bar fits a 1280 px window without
@@ -1093,7 +1349,7 @@ export default function App() {
           }}
         >
           {NAV_TABS.map((t) => (
-            <Tab key={t.value} value={t.value} label={
+            <Tab key={t.value} value={t.value} id={`tab-${t.value}`} aria-controls="tab-panel" label={
               <>
                 {t.label}
                 {/* a chevron drawn as an SVG, since Figtree has no arrow glyphs */}
@@ -1110,12 +1366,13 @@ export default function App() {
           ))}
         </Tabs>
 
-        <Box sx={{ flex: 1 }} />
+        <Box ref={spacerRef} sx={{ flex: 1 }} />
+        {!feedbackBelow && feedbackControls}
         {/* Set in full white rather than a dim tint: at this size a faded grey
             on navy is the first thing to become unreadable. Shown only where
             there is room beside the tabs: from 1500 px wide, since below that
             it was squeezed to a narrow column and pushed the page sideways. */}
-        <Typography sx={{
+        <Typography ref={orgRef} sx={{
           color: "rgba(255,255,255,0.92)", fontSize: 13.5, fontWeight: 500,
           textAlign: "right", maxWidth: 300, minWidth: 0, lineHeight: 1.4,
           display: "none", "@media (min-width: 1500px)": { display: "block" },
@@ -1123,8 +1380,25 @@ export default function App() {
           {ORG_NAME}
         </Typography>
       </Box>
+      {/* Where the tabs leave no room for them, the feedback controls get a
+          slim row of their own under the bar, at its right end, rather than
+          running off the edge of the window. */}
+      {feedbackBelow && (
+        <Box sx={{ display: "flex", justifyContent: "flex-end", px: 2.5, pb: 1, mt: -0.25 }}>
+          {feedbackControls}
+        </Box>
+      )}
+      </Box>
 
-      <Box sx={{ display: "flex", flex: 1, minHeight: 0 }}>
+      {/* The green strip while feedback mode is on. It takes room from the
+          page rather than covering it; the map resizes itself to fit. */}
+      <FeedbackStrip />
+
+      {/* The panel and the map: the page's main part, and the panel of the
+          tab that is open. */}
+      <Box component="main" sx={{ display: "flex", flex: 1, minHeight: 0 }}>
+      <Box role="tabpanel" id="tab-panel" aria-labelledby={`tab-${tab}`}
+        sx={{ display: "flex", flex: 1, minWidth: 0, minHeight: 0 }}>
       <Drawer variant="permanent" sx={{
         width: left, flexShrink: 0,
         // Pinned inside the row rather than to the viewport, so the title bar
@@ -1182,7 +1456,12 @@ export default function App() {
                   reader's own area (one in this browser's list) has the
                   remove X; the published hazards never do. The closed field
                   shows the name alone, without the X. */}
-              <Select fullWidth size="small" value={runOn ? "__run" : hazardId} sx={PICKER_SX}
+              {/* The share icon and X act on the hazard picked, and sit
+                  beside the pulldown so the keyboard and screen readers can
+                  reach them; inside the list they are for the mouse only
+                  (inList, see RowIcon in OnDemand.tsx). */}
+              <Stack ref={hazardPickRef} direction="row" alignItems="center" spacing={0.5}>
+              <Select fullWidth size="small" value={runOn ? "__run" : hazardId} sx={{ ...PICKER_SX, flex: 1, minWidth: 0 }}
                 labelId={cardTitleId("hazard")}
                 open={hazardMenu} onOpen={() => setHazardMenu(true)} onClose={() => setHazardMenu(false)}
                 onChange={(e) => {
@@ -1199,7 +1478,7 @@ export default function App() {
                 {runOn && !runArea && (
                   <MenuItem value="__run">Shared hazard: {runName}</MenuItem>
                 )}
-                {areas.length > 0 && <ListSubheader sx={{ lineHeight: "32px" }}>Your hazards</ListSubheader>}
+                {areas.length > 0 && <SelectGroup label="Your hazards" />}
                 {[...areas].sort((x, y) => Date.parse(y.created_at) - Date.parse(x.created_at)).map((a) => {
                   // the same row as in "Your areas" and "Your routes": a
                   // check and a bold name on the one on the map, the name,
@@ -1219,14 +1498,14 @@ export default function App() {
                         </Typography>
                       </Box>
                       {link && (
-                        <ShareIconButton name={a.name}
+                        <ShareIconButton inList name={a.name}
                           onShare={() => { setHazardMenu(false); hazardShare.share(a.name, link()); }} />
                       )}
-                      <RemoveButton name={a.name} onRemove={() => removeArea(a.run_id)} />
+                      <RemoveButton inList name={a.name} onRemove={() => removeArea(a.run_id)} />
                     </MenuItem>
                   );
                 })}
-                {areas.length > 0 && <ListSubheader sx={{ lineHeight: "32px" }}>Published hazards</ListSubheader>}
+                {areas.length > 0 && <SelectGroup label="Published hazards" />}
                 {/* The published hazards get the same share icon (no X: they
                     are never removed). The link opens that hazard with the
                     drive time and grouping on show. */}
@@ -1235,16 +1514,19 @@ export default function App() {
                     <Box component="span" sx={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>
                       {h.label}
                     </Box>
-                    <ShareIconButton name={h.label}
-                      onShare={() => {
-                        setHazardMenu(false);
-                        hazardShare.share(h.label, shareLink(
-                          { tab: "isolation", county, hazard: h.id, cutoff: String(cutoff), method }, false));
-                      }} />
+                    <ShareIconButton inList name={h.label} onShare={() => sharePublished(h)} />
                   </MenuItem>
                 ))}
               </Select>
-              <ShareNote note={hazardShare.note} onClose={hazardShare.clear} />
+              {runOn && runArea && areaLink(runArea) && (
+                <ShareIconButton name={runArea.name} onShare={() => hazardShare.share(runArea.name, areaLink(runArea)!())} />
+              )}
+              {runOn && runArea && (
+                <RemoveButton name={runArea.name} onRemove={() => { removeArea(runArea.run_id); toHazardPicker(); }} />
+              )}
+              {!runOn && pubHazard && <ShareIconButton name={pubHazard.label} onShare={() => sharePublished(pubHazard)} />}
+              </Stack>
+              <ShareNote note={hazardShare.note} onClose={() => { hazardShare.clear(); toHazardPicker(); }} />
             </Card>
           )}
 
@@ -1324,7 +1606,7 @@ export default function App() {
               Methodology, as in the approved mockups. Left out of a
               production build unless VITE_ONDEMAND_LIVE=1 (ONDEMAND_LIVE). */}
           {tab === "isolation" && ONDEMAND_LIVE && (
-            <DrawCard drawing={drawing} limits={limits} limitsFailed={limitsFailed}
+            <DrawCard drawing={drawing} limits={limits} limitsFailed={limitsFailed} buttonRef={drawButtonRef}
               onStart={startDrawing} onCancel={stopDrawing} onSetup={openSetup} lit={panelTarget === "draw"} />
           )}
           {tab === "isolation" && ONDEMAND_LIVE && (
@@ -1394,6 +1676,21 @@ export default function App() {
           into scrolling sideways. */}
       <Box sx={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
       <Box ref={mapAreaRef} sx={{ position: "relative", flex: 1, minWidth: 0, minHeight: 0, overflow: "hidden" }}>
+        {/* Basemap and the legend come first in the page, so the Tab key
+            reaches them (top left of the map) before the map and its zoom
+            buttons (top right). Both are placed absolutely, so the order
+            does not move them on screen. */}
+        <BasemapPicker value={basemap} onChange={setBasemap} />
+        {/* Folded while the guide talks about the road or other panel cards,
+            so it never covers the hazard or the guide; open on the guide's
+            steps about the legend and the services. */}
+        <MapLegend
+          // folded while an area is drawn, so it never covers the drawing
+          open={guide ? panelTarget === "legend" || panelTarget === "services" : drawing ? false : legendOpen}
+          lit={panelTarget === "legend" || panelTarget === "services"}
+          onToggle={toggleLegend}>
+          {legendBody}
+        </MapLegend>
         <MapBoundary>
           <MapView
             onEmptyChange={setMapEmpty}
@@ -1430,7 +1727,7 @@ export default function App() {
             onInteract={() => setTouched(true)}
             guide={guide && !onPanelStep ? (
               <MapGuide ex={guide.ex} step={guide.step} steps={steps}
-                color={classColor(field, guideProps)} nudged={guide.nudged}
+                color={classColor(field, guideProps, basemap)} nudged={guide.nudged}
                 onStep={goToStep} onEnd={endGuide} />
             ) : null}
             onGuideAway={onGuideAway}
@@ -1445,7 +1742,7 @@ export default function App() {
             onDrawCancel={stopDrawing}
             drawShape={keepShape}
             routeBox={ONDEMAND_LIVE ? (ctx) => (
-              <RoutesBox key={ctx.key} ctx={ctx}
+              <RoutesBox key={ctx.key} ctx={ctx} basemap={basemap}
                 onSave={(name, road, result) => addSavedRoute(newSavedRoute(name, road,
                   String(ctx.props.overture_id ?? ""), ctx.lngLat, ctx.props, result))}
                 removed={removedRoute} onGone={() => setFlyNonce((n) => n + 1)} onShowing={setShownRoute}
@@ -1454,18 +1751,6 @@ export default function App() {
             openRoutes={openRoutes}
           />
         </MapBoundary>
-
-        <BasemapPicker value={basemap} onChange={setBasemap} />
-        {/* Folded while the guide talks about the road or other panel cards,
-            so it never covers the hazard or the guide; open on the guide's
-            steps about the legend and the services. */}
-        <MapLegend
-          // folded while an area is drawn, so it never covers the drawing
-          open={guide ? panelTarget === "legend" || panelTarget === "services" : drawing ? false : legendOpen}
-          lit={panelTarget === "legend" || panelTarget === "services"}
-          onToggle={toggleLegend}>
-          {legendBody}
-        </MapLegend>
 
         {/* The guide during the steps about the panel: a dark card on the
             map's left edge, its arrow on the panel card being described. */}
@@ -1504,7 +1789,8 @@ export default function App() {
         )}
 
         {!guide && (
-          <GuideLauncher shape={launcher} onStart={() => startExample(firstExample(tab, hazardId))} />
+          <GuideLauncher shape={launcher} buttonRef={launcherRef}
+            onStart={() => startExample(firstExample(tab, hazardId))} />
         )}
 
         {/* One line on what to do, for someone who arrived by a link or left
@@ -1547,15 +1833,36 @@ export default function App() {
                 : `Each hazard covers the roads within ${hazard.bufferMiles} miles of it. This one `
                   + `is ${hazard.label.charAt(0).toLowerCase() + hazard.label.slice(1)}.`}
             </Typography>
-            <Box component="button" onClick={() => (runReady ? setFlyNonce((n) => n + 1) : goToHazard(hazard.id))}
-              sx={{
-                font: "inherit", fontWeight: 600, fontSize: 13.5, cursor: "pointer",
-                px: 1.75, py: 0.75, borderRadius: 1.5, color: "#fff",
-                bgcolor: BULLDOG_BLUE, border: "none",
-                "&:hover": { bgcolor: NIGHT_SKY },
-              }}>
-              Go to the hazard
-            </Box>
+            {/* The user asked for a second way out of an empty view: draw a
+                hazard right here, with "or" between the two buttons. Only
+                where the drawing tool is offered (ONDEMAND_LIVE). */}
+            <Stack direction="row" alignItems="center" spacing={1.25} useFlexGap flexWrap="wrap">
+              <Box component="button" onClick={() => (runReady ? setFlyNonce((n) => n + 1) : goToHazard(hazard.id))}
+                sx={{
+                  font: "inherit", fontWeight: 600, fontSize: 13.5, cursor: "pointer",
+                  px: 1.75, py: 0.75, borderRadius: 1.5, color: "#fff",
+                  bgcolor: BULLDOG_BLUE, border: "none",
+                  "&:hover": { bgcolor: NIGHT_SKY },
+                }}>
+                Go to the hazard
+              </Box>
+              {ONDEMAND_LIVE && (
+                <>
+                  <Typography component="span" sx={{ fontSize: 13.5, fontWeight: 600, color: "text.secondary" }}>
+                    or
+                  </Typography>
+                  <Box component="button" onClick={startDrawing}
+                    sx={{
+                      font: "inherit", fontWeight: 600, fontSize: 13.5, cursor: "pointer",
+                      px: 1.75, py: 0.75, borderRadius: 1.5, color: "#fff",
+                      bgcolor: DRAW_BUTTON, border: "none",
+                      "&:hover": { bgcolor: DRAW_INK },
+                    }}>
+                    Draw a hazard
+                  </Box>
+                </>
+              )}
+            </Stack>
           </Box>
         )}
 
@@ -1590,7 +1897,7 @@ export default function App() {
           rather than over it. Functional isolation only, and hidden while
           the guide is open. */}
       {showStats && (
-        <Box sx={{
+        <Box ref={statsRef} data-feedback-area="Numbers under the map" sx={{
           flexShrink: 0, bgcolor: "#f4f6f8", borderTop: "1px solid #dfe3e8", px: 1.5, py: 1.25,
         }}>
           <Stack direction="row" spacing={1} alignItems="stretch" flexWrap="wrap" useFlexGap>
@@ -1616,18 +1923,81 @@ export default function App() {
                 + (hazard.overtureRelease ? `, ${releaseWords(hazard.overtureRelease)}.` : ".")
               : `Counted for this hazard. Buildings and roads from Overture Maps, `
                 + `${releaseWords(hazard.overtureRelease)}.`}
+            {/* For testers, on a drawn hazard's numbers: a result that does
+                not look right is reported with a copy of it. Kept apart from
+                Share, at the end of this line. */}
+            {runReady && (
+              <ReportLink build={buildRunReport} region={() => statsRef.current} sx={{ ml: 1, fontSize: 12 }} />
+            )}
           </Typography>
         </Box>
       )}
       </Box>
       </Box>
+      {/* The dev inbox beside the map, outside the tab's panel since it is
+          not part of any tab. Renders nothing in a production build. */}
+      <FeedbackInbox />
+      </Box>
 
-      <NameDialog open={naming} onCancel={() => { setNaming(false); setDrawn(null); }} onSubmit={submitRun} />
+      <NameDialog open={naming} onCancel={() => { setNaming(false); setDrawn(null); }} onSubmit={submitRun}
+        onClosed={() => focusLater(() => (drawButtonRef.current && !drawButtonRef.current.disabled
+          ? drawButtonRef.current : mapCanvas(mapAreaRef.current)))} />
 
       <Methodology file={doc?.file ?? null} title={doc?.label ?? ""} width={DOC_WIDTH}
         onClose={() => setDoc(null)} />
+
+      {/* Feedback mode's clicks, outlines, popovers and pins, and on the dev
+          server the review list. Draws nothing while the mode is off. */}
+      <FeedbackLayer onOpenDoc={openDocFile} onRebuild={onRebuild} />
     </Box>
   );
+}
+
+// The map layers of a drawn hazard's results that a click in feedback mode
+// reports on: its roads (the hit layer is the wide, unseen one used for
+// picking), and the hazard's outline and fill.
+const RUN_REPORT_LAYERS = ["roads-hit", "roads-line", "roads-casing", "hazard-fill", "hazard-line", "hazard-rim", "hazard-tint"];
+
+// Whether feedback mode's controls go under the title bar rather than in it.
+// The three tabs leave about 10 px spare in a 1280 px window, so the switch
+// (and the inbox pill on the dev server) ran off the right edge and the
+// page scrolled sideways. They move down when the bar overflows, or when
+// they would squeeze the centre's name below `ORG_MIN` px (a narrower name
+// wraps to more lines than the logo is tall), and come back once the spare
+// room beside the tabs holds them again. The bar wraps by itself on narrow
+// screens, so there they stay in it.
+const ORG_MIN = 240;
+function useControlsBelow(
+  bar: React.RefObject<HTMLElement>, spacer: React.RefObject<HTMLElement>,
+  group: React.RefObject<HTMLElement>, org: React.RefObject<HTMLElement>,
+): boolean {
+  const [below, setBelow] = useState(false);
+  // their width when last seen, needed while they sit in the other row
+  const width = useRef(0);
+  React.useLayoutEffect(() => {
+    const b = bar.current;
+    if (!b) return;
+    const check = () => {
+      const g = group.current;
+      if (g && g.offsetWidth) width.current = g.offsetWidth;
+      const o = org.current;
+      const orgW = o && getComputedStyle(o).display !== "none" ? o.offsetWidth : 0;
+      if (!width.current || getComputedStyle(b).flexWrap !== "nowrap") { setBelow(false); return; }
+      if (!below) {
+        if (b.scrollWidth > b.clientWidth + 1 || (orgW > 0 && orgW < ORG_MIN)) setBelow(true);
+      } else {
+        const spare = (spacer.current?.offsetWidth ?? 0) + (orgW > 0 ? Math.max(0, orgW - ORG_MIN) : 0);
+        // 16 px: the bar's gap that the group brings with it
+        if (spare >= width.current + 16) setBelow(false);
+      }
+    };
+    check();
+    const ro = new ResizeObserver(check);
+    ro.observe(b);
+    if (group.current) ro.observe(group.current);
+    return () => ro.disconnect();
+  }, [below, bar, spacer, group, org]);
+  return below;
 }
 
 const LAUNCHER_SIZE = 46;
@@ -1638,10 +2008,13 @@ const LAUNCHER_WIDE = 184;
 // slides to the bottom left corner as a circle with a question mark, and
 // widens back into the labeled pill under the mouse or keyboard focus.
 // Night Sky with a white rim, so it holds up on the dark basemap too.
-function GuideLauncher({ shape, onStart }: { shape: "pill" | "circle"; onStart: () => void }) {
+function GuideLauncher({ shape, onStart, buttonRef }: {
+  shape: "pill" | "circle"; onStart: () => void; buttonRef?: React.Ref<HTMLButtonElement>;
+}) {
   const circle = shape === "circle";
   return (
-    <Box component="button" type="button" onClick={onStart} aria-label="Start the guide"
+    <Box component="button" type="button" ref={buttonRef} onClick={onStart} aria-label="Start the guide"
+      data-feedback-area="Start the guide button"
       sx={{
         position: "absolute", zIndex: 5,
         bottom: circle ? 40 : 34,
@@ -1691,6 +2064,19 @@ function MapGuide({ ex, step, steps, color, nudged, onStep, onEnd }: {
 }) {
   const last = step >= steps.length - 1;
   const s = steps[Math.min(step, steps.length - 1)];
+  // Keyboard focus goes to Next whenever the guide appears: when it opens,
+  // and when it moves between the road's popup and the card on the map's
+  // edge (each is a new copy of the guide). Within one, Next keeps focus.
+  const nextRef = useRef<HTMLButtonElement | null>(null);
+  React.useEffect(() => {
+    // a frame later, once MapLibre has placed the popup
+    focusLater(() => nextRef.current);
+  }, []);
+  // Back on step 2 takes the Back button away with it: focus goes to Next.
+  React.useEffect(() => {
+    if (document.activeElement === document.body) focusLater(() => nextRef.current);
+  }, [step]);
+  const titleId = React.useId();
   const button = {
     font: "inherit", fontWeight: 700, fontSize: 13.5, cursor: "pointer",
     px: 1.75, py: 0.7, borderRadius: 999, border: "1.5px solid #fff",
@@ -1700,12 +2086,14 @@ function MapGuide({ ex, step, steps, color, nudged, onStep, onEnd }: {
   // and the Back and Next row always show; a step too long for the room
   // scrolls between them.
   return (
-    <Box aria-live="polite" sx={{
+    // a dialog that leaves the rest of the page usable, named by its heading
+    <Box role="dialog" aria-modal="false" aria-labelledby={`${titleId}-n ${titleId}`} data-guide-dialog
+      data-feedback-area="Guide" sx={{
       width: 340, maxWidth: "100%", color: "#fff",
       display: "flex", flexDirection: "column", maxHeight: "var(--guide-room, none)",
     }}>
       <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ flexShrink: 0 }}>
-        <Typography sx={{
+        <Typography id={`${titleId}-n`} sx={{
           fontSize: 11.5, fontWeight: 700, letterSpacing: "0.06em",
           textTransform: "uppercase", color: "rgba(255,255,255,0.72)",
         }}>
@@ -1734,7 +2122,8 @@ function MapGuide({ ex, step, steps, color, nudged, onStep, onEnd }: {
         </Stack>
       )}
 
-      <Box sx={{
+      {/* read out by screen readers as the steps change */}
+      <Box aria-live="polite" sx={{
         flex: "1 1 auto", minHeight: 0, overflowY: "auto", mr: -1, pr: 1,
         scrollbarColor: "rgba(255,255,255,0.4) transparent",
       }}>
@@ -1747,7 +2136,7 @@ function MapGuide({ ex, step, steps, color, nudged, onStep, onEnd }: {
           </Box>
         )}
 
-        <Typography sx={{ fontWeight: 700, fontSize: 16.5, mt: 1.25, mb: 0.75, lineHeight: 1.3 }}>
+        <Typography id={titleId} sx={{ fontWeight: 700, fontSize: 16.5, mt: 1.25, mb: 0.75, lineHeight: 1.3 }}>
           {s.title}
         </Typography>
         {s.lines.map((l) => (
@@ -1782,7 +2171,11 @@ function MapGuide({ ex, step, steps, color, nudged, onStep, onEnd }: {
             Back
           </Box>
         ) : <span />}
-        <Box component="button" type="button" onClick={() => (last ? onEnd() : onStep(step + 1))} sx={{
+        {/* data-feedback-pass: a control in feedback mode like every button
+            (a plain click works it, Alt+click gives feedback), marked so
+            any later change to its element keeps it one. */}
+        <Box component="button" type="button" ref={nextRef} data-feedback-pass=""
+          onClick={() => (last ? onEnd() : onStep(step + 1))} sx={{
           ...button, color: NIGHT_SKY, bgcolor: "#fff", minWidth: 78,
           "&:hover": { bgcolor: "#dbe7fb" },
         }}>
@@ -1806,6 +2199,7 @@ function BasemapPicker({ value, onChange }: { value: BasemapKey; onChange: (k: B
     <>
       <Tooltip title={open ? "" : label} placement="right">
         <ButtonBase ref={button} aria-label={`${label}. Change the basemap`} aria-haspopup="menu"
+          data-feedback-area="Basemap"
           aria-expanded={open} onClick={() => setOpen((o) => !o)}
           sx={{
             position: "absolute", top: 10, left: 10, zIndex: 3, gap: 0.75, height: 40, minWidth: 40,
@@ -1828,11 +2222,15 @@ function BasemapPicker({ value, onChange }: { value: BasemapKey; onChange: (k: B
         }}>
           Basemap
         </Typography>
+        {/* data-feedback-pass on each basemap: picking one works as usual in
+            feedback mode (Alt+click gives feedback). On each item rather
+            than the list, so Alt+click suggests words for the one basemap,
+            not every name run together. */}
         <MenuList dense disablePadding autoFocusItem={open} aria-label="Basemap"
           onKeyDown={(e) => { if (e.key === "Tab") { e.preventDefault(); setOpen(false); } }}>
           {(Object.keys(BASEMAPS) as BasemapKey[]).map((k) => (
             <MenuItem key={k} role="menuitemradio" aria-checked={k === value} selected={k === value}
-              onClick={() => onChange(k)}
+              data-feedback-pass="" onClick={() => onChange(k)}
               sx={{
                 justifyContent: "space-between", gap: 1, fontWeight: k === value ? 700 : 400,
                 "&.Mui-selected": { bgcolor: "transparent" },
@@ -1912,12 +2310,14 @@ function MapLegend({ open, lit, onToggle, children }: {
 const LEGEND_ROW = 20;
 function LegendRow({ c, label, on }: { c: { color: string; widthMm: number }; label: string; on: boolean }) {
   return (
-    <Stack direction="row" spacing={1} alignItems="center" sx={{ height: LEGEND_ROW, opacity: on ? 1 : 0.3 }}>
+    // A row switched off fades only its line; its words go gray, which still
+    // reads at 4.5:1 (a faded label did not).
+    <Stack direction="row" spacing={1} alignItems="center" sx={{ height: LEGEND_ROW }}>
       <Box sx={{
-        width: 26, bgcolor: c.color, flexShrink: 0,
+        width: 26, bgcolor: c.color, flexShrink: 0, opacity: on ? 1 : 0.3,
         height: Math.max(2, c.widthMm * 7), borderRadius: "1px",
       }} />
-      <Typography variant="caption" sx={{ whiteSpace: "nowrap" }}>{label}</Typography>
+      <Typography variant="caption" sx={{ whiteSpace: "nowrap", color: on ? undefined : "#57606a" }}>{label}</Typography>
     </Stack>
   );
 }
@@ -1961,6 +2361,15 @@ function ServiceIcon({ kind }: { kind: ServiceKind }) {
 
 const cardTitleId = (guide: PanelTarget) => `card-title-${guide}`;
 
+// A heading inside a pulldown's list. MUI's Select makes every child an
+// option, and a heading read out as an option you cannot pick; this one
+// drops what the Select adds and stays a plain heading, skipped by the
+// arrow keys as ListSubheader is.
+function SelectGroup({ label }: { label: string }) {
+  return <ListSubheader role="presentation" sx={{ lineHeight: "32px" }}>{label}</ListSubheader>;
+}
+SelectGroup.muiSkipListHighlight = true;
+
 // a left-panel section, boxed like the landslide viewer's
 //
 // `guide` names the card for the guide to point at, and `lit` marks it as the
@@ -1988,7 +2397,7 @@ function Card({ title, guide, lit, children }: {
       }),
     }}>
       {/* its id names the picker in the card for screen readers (cardTitleId) */}
-      {title && <Typography variant="subtitle2" gutterBottom id={guide ? cardTitleId(guide) : undefined}>{title}</Typography>}
+      {title && <Typography variant="subtitle2" component="h2" gutterBottom id={guide ? cardTitleId(guide) : undefined}>{title}</Typography>}
       {children}
     </Box>
   );

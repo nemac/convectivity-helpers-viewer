@@ -17,19 +17,23 @@ import DownloadIcon from "@mui/icons-material/Download";
 import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
 import KeyboardArrowUpIcon from "@mui/icons-material/KeyboardArrowUp";
 import { BULLDOG_BLUE, NIGHT_SKY } from "./brand";
-import { splitNames } from "./config";
+import { recolorSwatches, splitNames, type BasemapKey } from "./config";
 import type { RouteBoxCtx } from "./MapView";
+import { focusLater } from "./focus";
+import { ReportLink, routesReport, useReportSource } from "./feedback";
 import {
-  ApiError, ApiTarget, CODE_REMEMBERED, CodeNeeded, DrawCheck, FiLimits, MAX_ACROSS_MI, MAX_SQ_MI, ROUTE_COLORS,
-  ROUTE_INKS, ROUTE_KEEP_DAYS, RouteLimits, RouteResult, SavedArea, SavedRoute, TARGET_SWITCHABLE, TOO_BIG, api,
+  ApiError, ApiTarget, CODE_REMEMBERED, CodeNeeded, DrawCheck, FiLimits, MAX_ACROSS_MI, MAX_SQ_MI,
+  ROUTE_KEEP_DAYS, RouteLimits, RouteResult, SavedArea, SavedRoute, TARGET_SWITCHABLE, TOO_BIG, api,
   checkLocal, copyText, downloadText,
-  fileSlug, forgetCode, hasRememberedCode, expiryWords, rememberCode, rememberedCode, routesApi, routesCsv, shareIdFor,
-  setApiTarget, shareLink, timeLeft, useApiTarget,
+  fileSlug, forgetCode, hasRememberedCode, expiryWords, rememberCode, rememberedCode, routePalette, routesApi, routesCsv, shareIdFor,
+  setApiTarget, shareLink, targetNow, timeLeft, useApiTarget,
 } from "./ondemandApi";
 
 // Hidden on screen but read out by screen readers.
 export const VISUALLY_HIDDEN = {
-  position: "absolute", width: 1, height: 1, p: 0, m: "-1px", overflow: "hidden",
+  // "1px", not 1: MUI reads 1 as 100%, which made a window-sized box that
+  // let the whole page scroll.
+  position: "absolute", width: "1px", height: "1px", p: 0, m: "-1px", overflow: "hidden",
   clip: "rect(0 0 0 0)", whiteSpace: "nowrap", border: 0,
 } as const;
 
@@ -43,10 +47,12 @@ export const ERROR_BOX_SX = {
 // ------------------------------------------------------------ where the work goes
 
 // Only on the dev server at localhost: whether the two tools send their work
-// to the copy on this computer or to AWS. One setting for both tools. When
-// the local copy does not answer, "This computer" is grayed out and a link
-// opens the setup note (docs/local-setup.md). A production build never shows
-// it: import.meta.env.DEV is false there and the whole body is dropped.
+// to the copy on this computer or to AWS. One setting for both tools, and
+// "This computer" is the default. It is never grayed out and never moves to
+// AWS by itself (the user asked that dev always use the local copy); when the
+// local copy does not answer, a note says so, with a link to the setup note
+// (docs/local-setup.md). A production build never shows it:
+// import.meta.env.DEV is false there and the whole body is dropped.
 export function TargetSwitch({ onSetup }: { onSetup?: () => void }) {
   const { target, localUp } = useApiTarget();
   useEffect(() => { checkLocal(); }, []);
@@ -56,14 +62,13 @@ export function TargetSwitch({ onSetup }: { onSetup?: () => void }) {
     <Box sx={{ mt: 1.25 }}>
       <Typography sx={{ fontSize: 12, fontWeight: 700, color: "#3a434d", mb: 0.5 }}>Send the work to</Typography>
       {/* A switch (the user asked for a toggle switch): off is this
-          computer, on is AWS. With no local copy running it stays on AWS
-          and cannot be moved. */}
+          computer, on is AWS. Always movable. */}
       <Stack direction="row" alignItems="center" spacing={0.5}>
         <Typography component="span" sx={{ fontSize: 13, fontWeight: target === "local" ? 800 : 500,
-          color: localUp === false ? "#9aa3ad" : NIGHT_SKY }}>This computer</Typography>
-        <Switch checked={target === "aws"} disabled={localUp === false}
+          color: NIGHT_SKY }}>This computer</Typography>
+        <Switch checked={target === "aws"}
           onChange={(e) => setApiTarget(e.target.checked ? "aws" : "local")}
-          inputProps={{ "aria-label": "Send the work to AWS instead of this computer" }}
+          inputProps={{ "aria-label": "Send the work to AWS (live) instead of this computer" }}
           sx={{
             "& .MuiSwitch-switchBase.Mui-checked": { color: NIGHT_SKY },
             "& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track": { bgcolor: BULLDOG_BLUE, opacity: 0.6 },
@@ -73,9 +78,10 @@ export function TargetSwitch({ onSetup }: { onSetup?: () => void }) {
         </Typography>
       </Stack>
       {target === "aws" && <Typography sx={note}>AWS uses the real daily limits.</Typography>}
-      {localUp === false && (
-        <Typography sx={note}>
-          The copy on this computer is not running.{" "}
+      {localUp === false && target === "local" && (
+        <Typography sx={{ ...ERROR_BOX_SX, fontSize: 12, mt: 0.75 }}>
+          The copy on this computer is not running, so this tool cannot run. Start Docker, then
+          restart npm run dev:local.{" "}
           <Link component="button" underline="hover" onClick={onSetup}
             sx={{ fontSize: 12, color: BULLDOG_BLUE, verticalAlign: "baseline" }}>
             How to set it up
@@ -110,8 +116,10 @@ export const litSx = (lit?: boolean) => (lit ? {
   "@media (prefers-reduced-motion: reduce)": { animation: "none" },
 } : {});
 
-export function DrawCard({ drawing, limits, limitsFailed, onStart, onCancel, onSetup, lit = false }: {
+export function DrawCard({ drawing, limits, limitsFailed, onStart, onCancel, onSetup, lit = false, buttonRef }: {
   drawing: boolean; limits: FiLimits | null; limitsFailed: boolean;
+  // the Draw a hazard (or Cancel drawing) button, for focus to come back to
+  buttonRef?: React.Ref<HTMLButtonElement>;
   // the guide is pointing at this card
   lit?: boolean;
   onStart: () => void; onCancel: () => void;
@@ -126,14 +134,14 @@ export function DrawCard({ drawing, limits, limitsFailed, onStart, onCancel, onS
       ...litSx(lit),
     }}>
       {drawing ? (
-        <Button fullWidth onClick={onCancel} sx={{
+        <Button ref={buttonRef} fullWidth onClick={onCancel} sx={{
           height: 44, borderRadius: 2, fontSize: 16, fontWeight: 800, letterSpacing: "0.02em", textTransform: "none",
           color: DRAW_INK, bgcolor: "#fff", border: `2px solid ${DRAW_BUTTON}`, "&:hover": { bgcolor: "#eef8f3" },
         }}>
           Cancel drawing
         </Button>
       ) : (
-        <Button fullWidth disabled={none} onClick={onStart} startIcon={<EditIcon />} sx={{
+        <Button ref={buttonRef} fullWidth disabled={none} onClick={onStart} startIcon={<EditIcon />} sx={{
           height: 44, borderRadius: 2, fontSize: 16, fontWeight: 800, letterSpacing: "0.02em", textTransform: "none",
           color: "#fff", bgcolor: DRAW_BUTTON, "&:hover": { bgcolor: DRAW_INK },
           "&.Mui-disabled": { bgcolor: "#c9d3cf", color: "#fff" },
@@ -167,9 +175,23 @@ export function DrawCard({ drawing, limits, limitsFailed, onStart, onCancel, onS
 // A small X that takes one of the reader's own entries out of this browser's
 // list at once. Gray, never red or orange. It stops the click there, so the
 // list does not also open the entry.
-export function RemoveButton({ name, onRemove }: { name: string; onRemove: () => void }) {
+// `inList` is for a row inside a pulldown's list (see RowIcon).
+// `closes` marks an X that closes a box rather than removing an entry, so it
+// keeps working in feedback mode like every other close X (its name, "Remove
+// this box", is not one the feedback rule can tell from removing an entry).
+export function RemoveButton({ name, onRemove, inList = false, closes = false }: {
+  name: string; onRemove: () => void; inList?: boolean; closes?: boolean;
+}) {
+  if (inList) {
+    return (
+      <RowIcon title={`Remove ${name}`} color="#57606a" hover="#e6e9ee" onClick={onRemove}>
+        <CloseIcon sx={{ fontSize: 18 }} />
+      </RowIcon>
+    );
+  }
   return (
     <IconButton size="small" aria-label={`Remove ${name}`} title={`Remove ${name}`}
+      {...(closes ? { "data-feedback-pass": "" } : {})}
       onMouseDown={(e) => e.stopPropagation()}
       onClick={(e) => { e.stopPropagation(); e.preventDefault(); onRemove(); }}
       sx={{ flexShrink: 0, color: "#57606a", p: 0.5, "&:hover": { bgcolor: "#e6e9ee", color: NIGHT_SKY } }}>
@@ -184,13 +206,18 @@ export function RemoveButton({ name, onRemove }: { name: string; onRemove: () =>
 // let the page copy it. Ctrl+C or Cmd+C copies it from there.
 function ManualLink({ url, onClose, sx }: { url: string; onClose: () => void; sx?: object }) {
   return (
-    <Box role="dialog" aria-label="Copy this link" sx={{
+    <Box role="dialog" aria-label="Copy this link"
+      // Escape closes it, as it does the code box (and goes no further)
+      onKeyDown={(e: React.KeyboardEvent) => {
+        if (e.key === "Escape") { e.stopPropagation(); e.preventDefault(); onClose(); }
+      }}
+      sx={{
       bgcolor: "#fff", border: `1.5px solid ${BULLDOG_BLUE}`, borderRadius: 1.5, p: 1, width: 300, maxWidth: "80vw",
       boxShadow: "0 4px 14px rgba(0,20,45,0.18)", ...sx,
     }}>
       <Stack direction="row" alignItems="center" justifyContent="space-between">
         <Typography sx={{ fontSize: 12.5, fontWeight: 700, color: NIGHT_SKY }}>Copy this link</Typography>
-        <RemoveButton name="this box" onRemove={onClose} />
+        <RemoveButton name="this box" onRemove={onClose} closes />
       </Stack>
       <Box component="input" type="text" readOnly value={url} autoFocus
         ref={(el: HTMLInputElement | null) => { if (el) { el.focus(); el.select(); } }}
@@ -256,6 +283,9 @@ export function ShareButton({ link, label = "Share", title, small = false, below
   const [needCode, setNeedCode] = useState(false);
   const timer = useRef<number | undefined>(undefined);
   useEffect(() => () => window.clearTimeout(timer.current), []);
+  // closing the link box or the code box gives focus back to this button
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
+  const back = () => focusLater(() => buttonRef.current);
   const go = async (code?: string) => {
     let url: string;
     setProblem(null);
@@ -280,7 +310,7 @@ export function ShareButton({ link, label = "Share", title, small = false, below
   return (
     <Box sx={{ position: "relative", display: "inline-flex", flexShrink: 0, ...sx }}>
       {/* Named by its visible word, "Share"; the title says what it does. */}
-      <Button variant="outlined" size={small ? "small" : "medium"} title={title}
+      <Button ref={buttonRef} variant="outlined" size={small ? "small" : "medium"} title={title}
         startIcon={copied ? <CheckIcon /> : <ShareIcon />} onClick={() => go()}
         aria-live="polite" sx={{ ...OUTLINE_SX, whiteSpace: "nowrap", flex: 1,
           ...(small ? { py: 0.25, px: 1, minWidth: 0, fontSize: 13, "& .MuiButton-startIcon": { mr: 0.5 },
@@ -293,8 +323,8 @@ export function ShareButton({ link, label = "Share", title, small = false, below
           {problem}
         </Box>
       )}
-      {needCode && <CodeAsk onSubmit={(c) => go(c)} onCancel={() => setNeedCode(false)} sx={place} />}
-      {manual && <ManualLink url={manual} onClose={() => setManual(null)} sx={place} />}
+      {needCode && <CodeAsk onSubmit={(c) => go(c)} onCancel={() => { setNeedCode(false); back(); }} sx={place} />}
+      {manual && <ManualLink url={manual} onClose={() => { setManual(null); back(); }} sx={place} />}
     </Box>
   );
 }
@@ -352,7 +382,16 @@ export function ShareNote({ note, onClose }: {
 }
 // A row's share icon. It stops the click there, so the list does not also
 // pick the entry.
-export function ShareIconButton({ name, onShare }: { name: string; onShare: () => void }) {
+export function ShareIconButton({ name, onShare, inList = false }: {
+  name: string; onShare: () => void; inList?: boolean;
+}) {
+  if (inList) {
+    return (
+      <RowIcon title={`Share ${name}`} color={BULLDOG_BLUE} hover="#eef2f9" onClick={onShare}>
+        <ShareIcon sx={{ fontSize: 18 }} />
+      </RowIcon>
+    );
+  }
   return (
     <IconButton size="small" aria-label={`Share ${name}`} title="Copy a link to share"
       onMouseDown={(ev) => ev.stopPropagation()}
@@ -360,6 +399,24 @@ export function ShareIconButton({ name, onShare }: { name: string; onShare: () =
       sx={{ flexShrink: 0, color: BULLDOG_BLUE, p: 0.5, "&:hover": { bgcolor: "#eef2f9", color: NIGHT_SKY } }}>
       <ShareIcon sx={{ fontSize: 18 }} />
     </IconButton>
+  );
+}
+// The share icon or X on a row inside a pulldown's list, for the mouse. A
+// button inside a list option cannot be reached from the keyboard (Tab
+// closes the list) and reads to a screen reader as part of the option, so
+// this one is hidden from both. The same actions are real buttons beside the
+// pulldown, for the entry picked or on the map.
+function RowIcon({ title, color, hover, onClick, children }: {
+  title: string; color: string; hover: string; onClick: () => void; children: React.ReactNode;
+}) {
+  return (
+    <Box component="span" aria-hidden="true" title={title}
+      onMouseDown={(ev: React.MouseEvent) => ev.stopPropagation()}
+      onClick={(ev: React.MouseEvent) => { ev.stopPropagation(); ev.preventDefault(); onClick(); }}
+      sx={{ flexShrink: 0, display: "inline-flex", p: 0.5, borderRadius: "50%", color, cursor: "pointer",
+        transition: "background-color 150ms", "&:hover": { bgcolor: hover, color: NIGHT_SKY } }}>
+      {children}
+    </Box>
   );
 }
 // A saved area's line: "Running...", or its expiry date and countdown.
@@ -380,7 +437,11 @@ function SavedListCard({ title, entries, one, many, unit, onPick, onRemove }: {
   // the entry whose link waits for the access code (see CodeAsk)
   const [askFor, setAskFor] = useState<ListEntry | null>(null);
   const titleId = `saved-list-${one.replace(/\W+/g, "-")}`;
+  const boxRef = useRef<HTMLDivElement>(null);
+  const toList = () => focusLater(() => boxRef.current?.querySelector<HTMLElement>('[role="combobox"]'));
   if (!entries.length) return null;
+  // the entry on the map, whose share icon and X are also beside the list
+  const shown = entries.find((e) => e.shown);
   const share = async (e: ListEntry, code?: string) => {
     if (!e.link) return;
     setOpen(false);
@@ -392,9 +453,10 @@ function SavedListCard({ title, entries, one, many, unit, onPick, onRemove }: {
     }
   };
   return (
-    <Box sx={{ border: "1px solid #ddd", borderRadius: 1.5, px: 2, py: 1.5, bgcolor: "#fff", mt: 2 }}>
-      <Typography variant="subtitle2" gutterBottom id={titleId}>{title}</Typography>
-      <Select fullWidth size="small" value="" displayEmpty open={open} labelId={titleId}
+    <Box ref={boxRef} sx={{ border: "1px solid #ddd", borderRadius: 1.5, px: 2, py: 1.5, bgcolor: "#fff", mt: 2 }}>
+      <Typography variant="subtitle2" component="h2" gutterBottom id={titleId}>{title}</Typography>
+      <Stack direction="row" alignItems="center" spacing={0.5}>
+      <Select fullWidth size="small" value="" displayEmpty open={open} labelId={titleId} sx={{ flex: 1, minWidth: 0 }}
         onOpen={() => setOpen(true)} onClose={() => setOpen(false)}
         onChange={(e) => e.target.value && onPick(e.target.value)}
         renderValue={() => (
@@ -412,17 +474,20 @@ function SavedListCard({ title, entries, one, many, unit, onPick, onRemove }: {
                 <Typography variant="body2" noWrap sx={{ fontWeight: e.shown ? 700 : 400 }}>{e.name}</Typography>
                 <Typography variant="caption" color="text.secondary" noWrap sx={{ display: "block" }}>{e.line}</Typography>
               </Box>
-              {e.link && <ShareIconButton name={e.name} onShare={() => share(e)} />}
-              <RemoveButton name={e.name} onRemove={() => onRemove(e.id)} />
+              {e.link && <ShareIconButton inList name={e.name} onShare={() => share(e)} />}
+              <RemoveButton inList name={e.name} onRemove={() => onRemove(e.id)} />
             </Stack>
           </MenuItem>
         ))}
       </Select>
+      {shown?.link && <ShareIconButton name={shown.name} onShare={() => share(shown)} />}
+      {shown && <RemoveButton name={shown.name} onRemove={() => { onRemove(shown.id); toList(); }} />}
+      </Stack>
       {askFor && (
-        <CodeAsk key={askFor.id} onSubmit={(c) => share(askFor, c)} onCancel={() => setAskFor(null)}
+        <CodeAsk key={askFor.id} onSubmit={(c) => share(askFor, c)} onCancel={() => { setAskFor(null); toList(); }}
           sx={{ mt: 0.75, width: "auto" }} />
       )}
-      <ShareNote note={note} onClose={clear} />
+      <ShareNote note={note} onClose={() => { clear(); toList(); }} />
       <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.75 }}>
         Kept in this browser for {ROUTE_KEEP_DAYS} days. Opening one again uses none of today's {unit}.
         The share icon copies a link to it, and the X removes it.
@@ -590,9 +655,12 @@ function CursorTip({ children }: { children: React.ReactNode }) {
   );
 }
 
-export function NameDialog({ open, onCancel, onSubmit }: {
+export function NameDialog({ open, onCancel, onSubmit, onClosed }: {
   open: boolean; onCancel: () => void; onSubmit: (name: string, code: string) => Promise<void>;
+  // once it has closed: where keyboard focus goes next
+  onClosed?: () => void;
 }) {
+  const nameRef = useRef<HTMLInputElement | null>(null);
   const [name, setName] = useState("");
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
@@ -619,12 +687,15 @@ export function NameDialog({ open, onCancel, onSubmit }: {
     }
   };
   return (
+    // Focus starts in the Name field and, once closed, goes where the page
+    // says (the Draw a hazard button), not back to the map it came from.
     <Dialog open={open} onClose={busy ? undefined : onCancel} maxWidth="xs" fullWidth
-      PaperProps={{ sx: { borderRadius: 3 } }}>
+      PaperProps={{ sx: { borderRadius: 3 } }} disableRestoreFocus
+      TransitionProps={{ onEntered: () => nameRef.current?.focus(), onExited: onClosed }}>
       <DialogTitle sx={{ fontWeight: 700, pb: 0.5 }}>Name this hazard</DialogTitle>
       <DialogContent>
         <Box component="form" onSubmit={(e: React.FormEvent) => { e.preventDefault(); go(); }}>
-          <TextField autoFocus fullWidth margin="dense" size="small" label="Name" value={name} disabled={busy}
+          <TextField inputRef={nameRef} autoFocus fullWidth margin="dense" size="small" label="Name" value={name} disabled={busy}
             inputProps={{ maxLength: 60 }} onChange={(e) => setName(e.target.value)} />
           <TextField fullWidth margin="dense" size="small" label="Access code" type="password" value={code}
             disabled={busy} autoComplete="off" onChange={(e) => setCode(e.target.value)} />
@@ -711,7 +782,7 @@ const miles = (v: number) => `${v.toFixed(1)} mi`;
 
 const drawRoutes = (ctx: RouteBoxCtx, res: RouteResult) =>
   ctx.show((res.routes ?? []).map((r, i) => ({
-    geometry: r.geometry, color: ROUTE_COLORS[i % 3], ink: ROUTE_INKS[i % 3], n: i + 1,
+    geometry: r.geometry, n: i + 1,   // the map picks the colors for its basemap
   })));
 
 const savedDate = (iso: string) =>
@@ -724,8 +795,10 @@ const savedDate = (iso: string) =>
 // for nothing. `onSave` keeps a set in this browser for 7 days. A set opened
 // from someone's shared link (ctx.saved.shared) shows the same way and can be
 // saved into this browser's list too, keeping the original's expiry date.
-export function RoutesBox({ ctx, onSave, removed = null, onGone, onShowing, onSetup }: {
+export function RoutesBox({ ctx, basemap, onSave, removed = null, onGone, onShowing, onSetup }: {
   ctx: RouteBoxCtx; onSave?: (name: string, road: string, result: RouteResult) => string;
+  // the chips and row borders match the route lines drawn on this basemap
+  basemap: BasemapKey;
   // opens the note on running the tools on this computer (dev server only)
   onSetup?: () => void;
   // The saved set the reader just removed from "Your routes". When it is the
@@ -736,6 +809,7 @@ export function RoutesBox({ ctx, onSave, removed = null, onGone, onShowing, onSe
 }) {
   const [askCode, setAskCode] = useState(!hasRememberedCode("routes"));
   const [code, setCode] = useState("");
+  const pal = routePalette(basemap);
   const { target } = useApiTarget();
   const [limits, setLimits] = useState<RouteLimits | null>(
     routeLimits && routeLimits.base === routesApi() ? routeLimits.data : null);
@@ -754,6 +828,11 @@ export function RoutesBox({ ctx, onSave, removed = null, onGone, onShowing, onSe
   const [savedAt, setSavedAt] = useState<string | null>(ctx.saved && !ctx.saved.shared ? ctx.saved.saved_at : null);
   // the saved set on show, until the reader goes back or asks afresh
   const [reopened, setReopened] = useState<SavedRoute | null>(ctx.saved);
+  // Where and when the routes on show were worked out, for the copy a
+  // "Something look wrong?" report carries. A reopened set was worked out
+  // when it was saved, on the target in use now as far as this page knows.
+  const [fetched, setFetched] = useState<{ at: string; target: ApiTarget }>(
+    () => ({ at: ctx.saved?.result.created_at ?? ctx.saved?.saved_at ?? new Date().toISOString(), target: targetNow() }));
   // a saved set's routes are drawn as soon as its popup opens
   useEffect(() => { if (ctx.saved) drawRoutes(ctx, ctx.saved.result); }, [ctx]);
   // the saved set on show here (reopened from the list, or just saved)
@@ -767,11 +846,21 @@ export function RoutesBox({ ctx, onSave, removed = null, onGone, onShowing, onSe
     return () => onShowing?.(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [savedId]);
+  // Where keyboard focus goes as the box changes under it: the routes'
+  // title when they come back, the "Saved as" line after Save, and the Get
+  // routes button after "Back to this road's numbers".
+  const titleRef = useRef<HTMLElement | null>(null);
+  const savedRef = useRef<HTMLElement | null>(null);
+  const getRef = useRef<HTMLButtonElement | null>(null);
   const save = (result: RouteResult) => {
     if (!onSave) return;
     setSavedId(onSave(saveName.trim() || road, road, result));
     setSavedAt(new Date().toISOString());
+    focusLater(() => savedRef.current);
   };
+  // the swatch in the road's numbers (ctx.html) follows the basemap
+  const htmlRef = useRef<HTMLDivElement | null>(null);
+  React.useLayoutEffect(() => { recolorSwatches(htmlRef.current, basemap); }, [basemap, result]);
 
   useEffect(() => {
     let live = true;
@@ -803,6 +892,7 @@ export function RoutesBox({ ctx, onSave, removed = null, onGone, onShowing, onSe
     setError(null);
     try {
       const base = routesApi();
+      const sentTo = targetNow();
       const res = await api<RouteResult>(base, "/routes",
         { code: use, overture_id: overtureId, lon: ctx.lngLat[0], lat: ctx.lngLat[1] });
       rememberCode(use, "routes");
@@ -816,11 +906,13 @@ export function RoutesBox({ ctx, onSave, removed = null, onGone, onShowing, onSe
         setLimits(next);
       }
       setResult(res);
+      setFetched({ at: res.created_at ?? new Date().toISOString(), target: sentTo });
       setSavedAt(null);
       setReopened(null);
       setSavedId(null);
       setSaveName(named !== "Unnamed road" ? named : res.segment?.name || "");
       drawRoutes(ctx, res);
+      focusLater(() => titleRef.current);
     } catch (e) {
       const err = e instanceof ApiError ? e : new ApiError(0, "Something went wrong. Please try again.");
       if (err.status === 401) { forgetCode("routes"); setAskCode(true); setCode(""); }
@@ -831,8 +923,19 @@ export function RoutesBox({ ctx, onSave, removed = null, onGone, onShowing, onSe
     }
   };
 
+  // The routes on show, as a "Something look wrong?" report: from the link
+  // under the title, or in feedback mode from a click on a route line.
+  const boxRef = useRef<HTMLDivElement | null>(null);
+  const buildReport = () => (result ? routesReport({
+    route_id: (reopened ? reopened.route_id : result.route_id) ?? undefined,
+    overture_id: overtureId, road_name: road, lnglat: ctx.lngLat, target: fetched.target,
+    fetched_at: fetched.at, expires_at: (reopened ? reopened.expires_at : result.expires_at) ?? undefined, result,
+  }) : null);
+  useReportSource("routes", ["alt-routes-line", "alt-routes-casing"], result ? buildReport : null);
+
   const back = () => {
     setResult(null); setOpen(null); setSavedAt(null); setReopened(null); setSavedId(null); ctx.show([]);
+    focusLater(() => getRef.current);
   };
 
   if (result) {
@@ -850,25 +953,35 @@ export function RoutesBox({ ctx, onSave, removed = null, onGone, onShowing, onSe
       // right and grows to fit: MapView sets --route-room to the height there
       // is below them, so it scrolls only when it is taller than the map.
       // Elsewhere it keeps the old cap.
-      <Box data-route-box sx={{ width: 380, maxWidth: "100%", maxHeight: "var(--route-room, min(70vh, 600px))",
+      <Box data-route-box ref={boxRef} sx={{ width: 380, maxWidth: "100%", maxHeight: "var(--route-room, min(70vh, 600px))",
         overflowY: "auto", pr: 0.5, fontFamily: "Figtree, Helvetica, Arial, sans-serif" }}>
         {/* Share sits beside the title: it copies a link that reopens this
             popup and its routes, so it is kept apart from Download. Only for
             routes the server kept; a set saved before it did has no id, and
             no Share button. */}
         <Stack direction="row" alignItems="flex-start" justifyContent="space-between" spacing={1}>
-          <Typography sx={{ fontWeight: 700, fontSize: 14, lineHeight: 1.3, pt: 0.25 }}>Alternate routes if {road} closes</Typography>
+          <Typography ref={titleRef} tabIndex={-1} sx={{ fontWeight: 700, fontSize: 14, lineHeight: 1.3, pt: 0.25, outline: "none" }}>
+            Alternate routes if {road} closes
+          </Typography>
           {ok && (routeId || reopened) && (
             <ShareButton small below title="Copy a link to these routes"
               link={async (c?: string) => shareLink({ tab: "pinch", route: routeId ?? await shareIdFor(reopened!, c) }, true)} />
           )}
         </Stack>
+        {/* For testers: a result that does not look right is reported with
+            a copy of it. Under the title, away from Share and Download. */}
+        <ReportLink build={buildReport} region={() => boxRef.current} sx={{ display: "block", mt: 0.25 }} />
+        {reopened?.rebuilt && (
+          <Typography sx={{ fontSize: 12, color: "#57606a", mt: 0.25 }}>
+            Rebuilt from a tester's report. Worked out {savedDate(reopened.saved_at)}, {timeLeft(reopened.expires_at)}.
+          </Typography>
+        )}
         {reopened && !reopened.shared && (
           <Typography sx={{ fontSize: 12, color: "#57606a", mt: 0.25 }}>
             Saved {savedDate(reopened.saved_at)} as "{reopened.name}", {timeLeft(reopened.expires_at)}.
           </Typography>
         )}
-        {reopened?.shared && (
+        {reopened?.shared && !reopened.rebuilt && (
           <Typography sx={{ fontSize: 12, color: "#57606a", mt: 0.25 }}>
             From a shared link. Worked out {savedDate(reopened.saved_at)}, {timeLeft(reopened.expires_at)}.
           </Typography>
@@ -906,16 +1019,17 @@ export function RoutesBox({ ctx, onSave, removed = null, onGone, onShowing, onSe
                 <Box key={i}
                   onMouseEnter={() => ctx.highlight(i + 1)} onMouseLeave={() => ctx.highlight(null)}
                   sx={{
-                    border: "1px solid", borderColor: lit === i + 1 ? ROUTE_COLORS[i % 3] : "#d5dae1",
-                    boxShadow: lit === i + 1 ? `0 0 0 2px ${ROUTE_COLORS[i % 3]}` : "none",
+                    border: "1px solid", borderColor: lit === i + 1 ? pal.colors[i % 3] : "#d5dae1",
+                    boxShadow: lit === i + 1 ? `0 0 0 2px ${pal.colors[i % 3]}` : "none",
                     bgcolor: lit === i + 1 ? "#f4f7fb" : "transparent",
-                    opacity: lit != null && lit !== i + 1 ? 0.6 : 1,
-                    transition: "opacity 120ms, box-shadow 120ms",
+                    // The other rows are not faded: that took their gray text
+                    // under 4.5:1. The lit row's border and tint mark it.
+                    transition: "box-shadow 120ms",
                     borderRadius: 2, px: 1.25, py: 1,
                   }}>
                   <Stack direction="row" alignItems="center" spacing={1} flexWrap="wrap" useFlexGap>
                     <Box sx={{
-                      width: 20, height: 20, borderRadius: "50%", bgcolor: ROUTE_COLORS[i % 3], color: ROUTE_INKS[i % 3],
+                      width: 20, height: 20, borderRadius: "50%", bgcolor: pal.colors[i % 3], color: pal.inks[i % 3],
                       fontSize: 12, fontWeight: 800, display: "inline-flex", alignItems: "center",
                       justifyContent: "center", flexShrink: 0,
                     }}>{i + 1}</Box>
@@ -980,7 +1094,7 @@ export function RoutesBox({ ctx, onSave, removed = null, onGone, onShowing, onSe
         {ok && onSave && (!reopened || reopened.shared) && (
           <Box sx={{ mt: 1.25, pt: 1, borderTop: "1px solid #e3e7ea" }}>
             {savedAt ? (
-              <Typography sx={{ fontSize: 13, fontWeight: 700, color: NIGHT_SKY }}>
+              <Typography ref={savedRef} tabIndex={-1} sx={{ fontSize: 13, fontWeight: 700, color: NIGHT_SKY, outline: "none" }}>
                 Saved as "{saveName.trim() || road}". It is in "Your alternate routes" in the panel until {keptUntil}.
               </Typography>
             ) : (
@@ -1022,23 +1136,28 @@ export function RoutesBox({ ctx, onSave, removed = null, onGone, onShowing, onSe
 
   return (
     <Box sx={{ fontFamily: "Figtree, Helvetica, Arial, sans-serif" }}>
-      <div dangerouslySetInnerHTML={{ __html: ctx.html }} />
+      <div ref={htmlRef} dangerouslySetInnerHTML={{ __html: ctx.html }} />
       {/* as wide as the road's text above it */}
       <Box sx={{ mt: 1.25, pt: 1, borderTop: "1px solid #e3e7ea" }}>
         {askCode && (
           <Box component="label" sx={{ display: "flex", flexDirection: "column", gap: 0.5, fontSize: 12, fontWeight: 700 }}>
             Access code
-            <Box component="input" type="password" value={code} autoComplete="off" disabled={busy}
+            <Box component="input" type="password" value={code} autoComplete="off" readOnly={busy}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) => setCode(e.target.value)}
               onKeyDown={(e: React.KeyboardEvent) => { if (e.key === "Enter") ask(); }}
               sx={{ font: "400 14px Figtree, Helvetica, Arial, sans-serif", border: "1px solid #b8c0ca",
                 borderRadius: 1.5, px: 1.25, py: 0.9 }} />
           </Box>
         )}
-        <Button fullWidth variant="contained" disableElevation disabled={busy || !overtureId || limits?.turned_off === true}
+        {/* While the routes are on their way it only looks and reads as
+            grayed out (aria-disabled), so it keeps keyboard focus; ask()
+            ignores a second press. */}
+        <Button ref={getRef} fullWidth variant="contained" disableElevation
+          disabled={!overtureId || limits?.turned_off === true} aria-disabled={busy || undefined}
           onClick={ask} sx={{
           mt: askCode ? 1 : 0, textTransform: "none", fontWeight: 700, fontSize: 14, bgcolor: BULLDOG_BLUE,
           "&:hover": { bgcolor: NIGHT_SKY },
+          ...(busy && { "&, &:hover": { bgcolor: "rgba(0, 0, 0, 0.12)", color: "rgba(0, 0, 0, 0.26)", cursor: "default" } }),
         }}>
           Get alternate and truck-safe routes
         </Button>

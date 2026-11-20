@@ -13,6 +13,14 @@ const theme = createTheme({
   palette: {
     primary: { main: BULLDOG_BLUE, dark: NIGHT_SKY },
   },
+  // No pale pulse behind a button or tab with keyboard focus: it faded the
+  // fill under white text below 4.5:1. The focus ring in index.html shows
+  // focus instead; the ripple on a click stays.
+  components: {
+    MuiButton: { defaultProps: { disableFocusRipple: true } },
+    MuiIconButton: { defaultProps: { disableFocusRipple: true } },
+    MuiTab: { defaultProps: { disableFocusRipple: true } },
+  },
 });
 
 createRoot(document.getElementById("root")!).render(

@@ -13,7 +13,7 @@ import {
   CUT_OFF_CLASS, DEFAULT_METHOD, DETOUR_SCORES, ISOLATION_CUTOFFS, HAZARDS, HAZARD_WORDS, Hazard, METHODS, PINCH_MAX_DETOUR_M,
   PINCH_NO_ALTERNATIVE_M, STYLES, TabId, hazardsIn, humanMiles, humanNumber, milesInWords,
   aboutShare, sharePct,
-  rankSentence, splitNames,
+  rankSentence, roadColor, splitNames, type BasemapKey,
 } from "./config";
 import { MAX_SQ_MI, ONDEMAND_LIVE, ROUTE_KEEP_DAYS } from "./ondemandApi";
 
@@ -147,10 +147,12 @@ function roughly(seconds: number): string {
 }
 
 // The swatch color for the example road, so the guide can show the color it
-// is talking about.
-export function classColor(classField: string, props: Record<string, any> | null): string | null {
+// is talking about, as the map draws it on this basemap.
+export function classColor(classField: string, props: Record<string, any> | null,
+                           basemap: BasemapKey): string | null {
   const cls = Number(props?.[classField]);
-  return STYLES[classField]?.classes.find((c) => c.value === cls)?.color ?? null;
+  const color = STYLES[classField]?.classes.find((c) => c.value === cls)?.color;
+  return color ? roadColor(color, basemap) : null;
 }
 
 // The walk through the panel, the same on every tab apart from the pickers

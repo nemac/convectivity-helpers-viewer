@@ -18,3 +18,22 @@ CLAUDE.md
 # commit any .env file.
 .env
 .env.*
+
+# Tester feedback that `npm run feedback:pull` downloads from the API, kept on
+# this machine to work through. Only the top-level folder: src/feedback/ is
+# the viewer's own code.
+/feedback/
+
+# The feedback Lambda function's local copy (feedback_api/local_server.py)
+# keeps feedback, its counters and its log on this machine, and deploy.sh
+# builds the function's zip; none of it belongs in the repository.
+feedback_api/local_data/
+feedback_api/build/
+feedback_api/__pycache__/
+# deploy.sh keeps two things for later runs: the deployed bucket's name, so
+# the local inbox still finds the feedback after the stack is removed, and
+# the salt, so a redeploy does not start the daily caps and lockouts over.
+feedback_api/.bucket
+# and the list's temporary copy, left behind if a write is cut short
+feedback_api/.bucket.tmp
+feedback_api/.deploy_salt

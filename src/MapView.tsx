@@ -8,10 +8,11 @@ import {
   MIN_RANKED, PINCH_MAX_DETOUR_M, PINCH_NO_ALTERNATIVE_M, SERVICES_URL, SERVICE_INK, SERVICE_KINDS,
   STYLES, Score, ServiceKind, humanMiles,
   aboutShare, humanNumber, humanSeconds, milesInWords, percentileOf, rankSentence,
-  roadTypeLabel, splitNames,
+  recolorSwatches, roadColor, roadTypeLabel, splitNames,
 } from "./config";
-import { checkShape } from "./ondemandApi";
+import { checkShape, routePalette } from "./ondemandApi";
 import type { SavedRoute } from "./ondemandApi";
+import { setFeedbackDrawing, setFeedbackMap } from "./feedback/mapHandle";
 
 // QGIS line widths are in millimetres on a printed page; the map works in
 // screen pixels. At 96 dpi one millimetre is about 3.78 px, which makes the
@@ -56,9 +57,12 @@ function widthExpression(classField: string, classes: { value: number; widthMm: 
   return interp;
 }
 
-function colorExpression(classField: string, classes: { value: number; color: string }[]) {
+// On the light basemaps the ramp is swapped for darker copies (roadColor in
+// config.ts), since the QGIS colors fall under 3:1 there.
+function colorExpression(classField: string, classes: { value: number; color: string }[],
+                         basemap: BasemapKey) {
   const match: any[] = ["match", classOf(classField)];
-  for (const c of classes) match.push(c.value, c.color);
+  for (const c of classes) match.push(c.value, roadColor(c.color, basemap));
   match.push("rgba(0,0,0,0)");   // out of range draws nothing, as in the QML
   return match;
 }
@@ -184,7 +188,7 @@ function hitLayer(at: Where, classField: string, minClass: number): any {
 // nothing in the blue to orange ramp, and nothing near the red of class 11.
 // The hatching lets the closed roads inside it still show through.
 function roadLayers(at: Where, classField: string, minClass: number, opacity: number,
-                    hazard: boolean): any[] {
+                    hazard: boolean, basemap: BasemapKey): any[] {
   const classes = STYLES[classField]?.classes ?? [];
   const layers: any[] = [];
   if (hazard) {
@@ -234,7 +238,7 @@ function roadLayers(at: Where, classField: string, minClass: number, opacity: nu
       "line-sort-key": classOf(classField),
     },
     paint: {
-      "line-color": colorExpression(classField, classes),
+      "line-color": colorExpression(classField, classes, basemap),
       "line-width": widthExpression(classField, classes),
       "line-opacity": opacity,
     },
@@ -423,6 +427,14 @@ const glowColors = (basemap: BasemapKey) => {
   return { halo: mix(HIGHLIGHT, ground, 0.5), core: mix(GLOW_CORE, ground, 0.7) };
 };
 
+// Route colors by number, from the palette for this basemap, so a basemap
+// switch recolors routes already drawn (darker ones on the light basemaps,
+// where the pale set measures under 2.3:1).
+const routeLineColor = (basemap: BasemapKey): any => {
+  const { colors } = routePalette(basemap);
+  return ["match", ["get", "n"], 1, colors[0], 2, colors[1], colors[2]];
+};
+
 // The area being drawn: a see-through bright green fill, its edges in the
 // same green over a dark green line (so they read on light gray as well as
 // dark gray), a dashed line to the mouse, and white corners. Once the shape
@@ -573,7 +585,7 @@ export interface RouteBoxCtx {
   lngLat: [number, number];
   saved: SavedRoute | null;          // a saved set being reopened, if that is what this is
   html: string;                      // the road's usual popup
-  show: (routes: { geometry: GeoJSON.LineString; color: string; ink: string; n: number }[]) => void;
+  show: (routes: { geometry: GeoJSON.LineString; n: number }[]) => void;
   relayout: () => void;              // the content changed size: place the popup again
   close: () => void;                 // shut the popup, its routes and the glow
   // Hovering a route's line on the map or its row in the popup lights both
@@ -678,8 +690,8 @@ export default function MapView({
   const roadHtml = (p: Record<string, any>) => {
     const l = latest.current;
     return l.hazard
-      ? describeIsolation(p, l.classField, l.score, l.hazard)
-      : describe(p, l.classField, l.score, l.countyKey);
+      ? describeIsolation(p, l.classField, l.score, l.hazard, l.basemap)
+      : describe(p, l.classField, l.score, l.countyKey, l.basemap);
   };
   const emptyCb = useRef(onEmptyChange);
   emptyCb.current = onEmptyChange;
@@ -769,7 +781,21 @@ export default function MapView({
     }
     clearRoutes(m);
     p.addTo(m);
-    if (!host) requestAnimationFrame(() => { if (pinned.current === p) clearOfEdges(m, p); });
+    // MapLibre puts the close button last, after the content, so the Tab key
+    // left the popup straight from it and the routes tool was reached only
+    // backwards. Moved first (CSS still sets it at the top right), the Tab
+    // order runs close, then the popup's own controls.
+    const closeBtn = p.getElement()?.querySelector<HTMLElement>(".maplibregl-popup-close-button");
+    if (closeBtn?.parentElement) {
+      const had = document.activeElement === closeBtn;
+      closeBtn.parentElement.prepend(closeBtn);
+      if (had) closeBtn.focus({ preventScroll: true });
+    }
+    // Not once the routes are being fitted: a set reopened from "Your
+    // alternate routes" (or by Rebuild) draws its routes before this frame,
+    // and this pan would cut the fit short and the move up after it.
+    let fitting = false;
+    if (!host) requestAnimationFrame(() => { if (pinned.current === p && !fitting) clearOfEdges(m, p); });
     // With routes on a wide map, the popup is docked at the map's right, under
     // the zoom buttons, and stays put while the map fits the routes beside it
     // or is panned. It grows to fit, scrolling only when it is taller than
@@ -810,17 +836,20 @@ export default function MapView({
           if (pinned.current !== p) return;
           clearRoutes(m);
           if (!routes.length) undock();
+          // The colors come from the basemap, not the data, so apply() can
+          // recolor the lines and markers when the basemap changes.
+          const pal = routePalette(latest.current.basemap);
           (m.getSource("alt-routes") as maplibregl.GeoJSONSource | undefined)?.setData({
             type: "FeatureCollection",
             // drawn last to first, so route 1 ends up on top
-            features: [...routes].reverse().map((r) => ({ type: "Feature", geometry: r.geometry, properties: { color: r.color, n: r.n } })),
+            features: [...routes].reverse().map((r) => ({ type: "Feature", geometry: r.geometry, properties: { n: r.n } })),
           });
           routeMarkers.current = routes.map((r) => {
             const el = document.createElement("div");
             el.className = "route-marker";
             el.textContent = String(r.n);
-            el.style.background = r.color;
-            el.style.color = r.ink;
+            el.style.background = pal.colors[(r.n - 1) % 3];
+            el.style.color = pal.inks[(r.n - 1) % 3];
             el.style.cursor = "pointer";
             el.addEventListener("mouseenter", () => setRouteHl(m, r.n));
             el.addEventListener("mouseleave", () => setRouteHl(m, null));
@@ -889,13 +918,18 @@ export default function MapView({
             p.getElement()?.style.setProperty("--route-room",
               `min(70vh, 600px, ${Math.max(200, H - 16 - CREDITS_H - 23)}px)`);
           }
+          fitting = true;
           m.fitBounds(b, { ...fit, duration: 700 });
           if (!dock) {
-            m.once("moveend", () => {
+            // measured a frame after the map has stopped: a moveend fired
+            // because another move cut this one short waits for that one
+            const after = () => requestAnimationFrame(() => {
               if (pinned.current !== p || dock) return;
+              if (m.isMoving()) { m.once("moveend", after); return; }
               const o = creditsOverlap(m, p);
               if (o && o.over > 0) m.panBy([0, Math.max(0, Math.min(o.over, o.top - 8))], { duration: 300 });
             });
+            m.once("moveend", after);
           }
         },
       };
@@ -903,6 +937,13 @@ export default function MapView({
     }
     p.on("close", () => {
       if (pinned.current === p) pinned.current = null;
+      // Keyboard focus was in the popup (its X, Escape, or the routes tool)
+      // and went with it: it goes back to the map, which opened the popup,
+      // rather than to the top of the page. The guide has its own handling.
+      if (!host) {
+        const a = document.activeElement;
+        if (!a || a === document.body || p.getElement()?.contains(a)) m.getCanvas().focus({ preventScroll: true });
+      }
       if (routeEl) {
         clearRoutes(m);
         setRouteHost((h) => (h?.el === routeEl ? null : h));
@@ -978,7 +1019,7 @@ export default function MapView({
           // Built into the style rather than set afterwards, for the same
           // reason as the basemap above: the first paint is already correct.
           ...roadLayers(isRunKey(tilesUrl) && run ? runAt : tilesAt(sourceLayer), classField, minClass, opacity,
-            hazard != null),
+            hazard != null, basemap),
           {
             id: "hazard-marker", type: "circle", source: "hazard-point",
             paint: {
@@ -999,7 +1040,7 @@ export default function MapView({
           {
             id: "alt-routes-line", type: "line", source: "alt-routes",
             layout: { "line-cap": "round", "line-join": "round" },
-            paint: { "line-color": ["get", "color"], "line-width": ["interpolate", ["linear"], ["zoom"], 10, 4, 15, 7] },
+            paint: { "line-color": routeLineColor(basemap), "line-width": ["interpolate", ["linear"], ["zoom"], 10, 4, 15, 7] },
           },
           // The area being drawn, on top of everything: a bright green
           // over a dark green edge, so it reads on both gray basemaps.
@@ -1011,6 +1052,10 @@ export default function MapView({
       center: urlView ? [urlView.lon, urlView.lat] : focus ? focus.lngLat : center,
       zoom: urlView ? urlView.zoom : focus ? focus.zoom : zoom,
       maxZoom: 18,
+      // A flat, north-up map only (the user asked to turn off 3D and spin):
+      // no tilt and no rotation by right-drag, Ctrl-drag, two fingers or keys.
+      pitch: 0, maxPitch: 0, bearing: 0,
+      dragRotate: false, pitchWithRotate: false, touchPitch: false,
       // Keeps the drawing buffer readable after each frame, so the canvas can
       // be captured. Without it a screenshot of the map comes back blank.
       preserveDrawingBuffer: true,
@@ -1024,7 +1069,12 @@ export default function MapView({
       if (svc && !m.hasImage(e.id)) m.addImage(e.id, serviceImage(svc.paths), { pixelRatio: 2 });
     });
 
-    m.addControl(new maplibregl.NavigationControl({ showCompass: true, showZoom: true }), "top-right");
+    // Two-finger twist and the keyboard's rotate keys would still spin the
+    // map, so those are turned off too, and the compass (which only resets a
+    // rotation) is gone.
+    m.touchZoomRotate.disableRotation();
+    m.keyboard.disableRotation();
+    m.addControl(new maplibregl.NavigationControl({ showCompass: false, showZoom: true }), "top-right");
     m.addControl(new maplibregl.ScaleControl({ unit: "imperial" }));
 
     // "Show it all": the whole county on the detour tab, the whole state on
@@ -1315,8 +1365,15 @@ export default function MapView({
     });
 
     map.current = m;
+    // Feedback mode turns clicks on the map into places and puts its pins
+    // here, without MapView knowing anything else about it.
+    setFeedbackMap(m);
     if (import.meta.env.DEV) (window as any).__map = m;   // for checks in a browser
-    return () => { window.removeEventListener("keydown", onEscape); m.remove(); map.current = null; ready.current = false; };
+    return () => {
+      window.removeEventListener("keydown", onEscape);
+      setFeedbackMap(null);
+      m.remove(); map.current = null; ready.current = false;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -1327,13 +1384,13 @@ export default function MapView({
   // A change that comes before the map has loaded (a drawn area's results
   // read while the first tiles are still loading) is made on "load" instead.
   const rebuild = (m: Map) => {
-    const { tilesUrl, sourceLayer, classField, minClass, opacity, hazard } = latest.current;
+    const { tilesUrl, sourceLayer, classField, minClass, opacity, hazard, basemap } = latest.current;
     built.current = `${tilesUrl}|${sourceLayer}`;
     for (const id of ROAD_LAYER_IDS) if (m.getLayer(id)) m.removeLayer(id);
     for (const id of ROAD_SOURCE_IDS) if (m.getSource(id)) m.removeSource(id);
     const useRun = isRunKey(tilesUrl) && runRef.current;
     for (const [id, src] of Object.entries(roadSources(tilesUrl, runRef.current))) m.addSource(id, src);
-    for (const layer of roadLayers(useRun ? runAt : tilesAt(sourceLayer), classField, minClass, opacity, hazard != null)) {
+    for (const layer of roadLayers(useRun ? runAt : tilesAt(sourceLayer), classField, minClass, opacity, hazard != null, basemap)) {
       m.addLayer(layer, "hazard-marker");
     }
     wasEmpty.current = null;   // re-answered on the next idle
@@ -1438,7 +1495,7 @@ export default function MapView({
     const { classField, basemap, opacity, minClass } = latest.current;
     const classes = STYLES[classField]?.classes ?? [];
     if (m.getLayer("roads-line")) {
-      m.setPaintProperty("roads-line", "line-color", colorExpression(classField, classes) as any);
+      m.setPaintProperty("roads-line", "line-color", colorExpression(classField, classes, basemap) as any);
       m.setPaintProperty("roads-line", "line-width", widthExpression(classField, classes) as any);
       m.setPaintProperty("roads-line", "line-opacity", opacity);
       m.setLayoutProperty("roads-line", "line-sort-key", classOf(classField));
@@ -1457,6 +1514,16 @@ export default function MapView({
       m.setPaintProperty("roads-casing", "line-opacity", opacity);
     }
     if (m.getLayer("mask-fill")) m.setPaintProperty("mask-fill", "fill-color", maskColor(basemap));
+    // routes already on the map take the new basemap's palette too
+    if (m.getLayer("alt-routes-line")) m.setPaintProperty("alt-routes-line", "line-color", routeLineColor(basemap));
+    const pal = routePalette(basemap);
+    routeMarkers.current.forEach((mk, i) => {
+      const el = mk.getElement();
+      el.style.background = pal.colors[i % 3];
+      el.style.color = pal.inks[i % 3];
+    });
+    // a popup already open keeps its swatch in step with the map
+    recolorSwatches(m.getContainer(), basemap);
     const glow = glowColors(basemap);
     for (const [id, c] of [["hazard-hl-roads", glow.halo], ["hazard-hl-roads-core", glow.core],
                            ["hazard-hl-bldg", glow.halo]]) {
@@ -1738,12 +1805,18 @@ export default function MapView({
       // control (Enter on "Cancel drawing" must cancel, not finish), are left
       // to that control. The map's own canvas is not a control.
       const t = ev.target as HTMLElement | null;
+      // Escape cancels from anywhere but a text field, the "Cancel drawing"
+      // button included (the cursor's note says "Esc cancels").
+      if (ev.key === "Escape" && !done && !ev.defaultPrevented
+          && !(t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)))) {
+        drawCb.current.onDrawCancel?.();
+        return;
+      }
       const onControl = t && t !== canvas && (t.isContentEditable
         || /^(INPUT|TEXTAREA|SELECT|BUTTON|A|SUMMARY)$/.test(t.tagName)
         || /^(button|link|checkbox|radio|switch|slider|menuitem|option|tab|combobox|textbox)$/.test(t.getAttribute("role") ?? ""));
       if (done || onControl) return;
       if (ev.key === "Backspace" || ev.key === "Delete") { ev.preventDefault(); pts.pop(); render(); }
-      else if (ev.key === "Escape") drawCb.current.onDrawCancel?.();
       // preventDefault: the name dialog opens and focuses its Name field
       // before this Enter is done, and the same key then sent the empty form
       else if (ev.key === "Enter") { ev.preventDefault(); finish(); }
@@ -1754,8 +1827,11 @@ export default function MapView({
     m.on("move", onMapMove);
     canvas.addEventListener("mouseout", onOut);
     window.addEventListener("keydown", onKey);
+    // feedback mode leaves every map click to the drawing meanwhile
+    setFeedbackDrawing(true);
     render();
     return () => {
+      setFeedbackDrawing(false);
       m.off("click", onClick);
       m.off("dblclick", onDbl);
       m.off("mousemove", onMove);
@@ -1811,7 +1887,7 @@ export default function MapView({
 // The two datasets answer different questions, so they get different wording
 // rather than one generic table that fits neither well.
 function describe(p: Record<string, any>, classField: string, score: Score,
-                  countyKey: string): string {
+                  countyKey: string, basemap: BasemapKey): string {
   const cls = Number(p[classField]);
   const style = STYLES[classField]?.classes.find((c) => c.value === cls);
   const { primary } = splitNames(p.road_name);
@@ -1942,7 +2018,7 @@ function describe(p: Record<string, any>, classField: string, score: Score,
   }
 
   const rank = style
-    ? `${swatch(style.color)}Ranked <b>${cls} of 10</b>`
+    ? `${swatch(style.color, basemap)}Ranked <b>${cls} of 10</b>`
       + `${cls === 10 ? " (highest)" : cls === 1 ? " (lowest)" : ""}`
       + ` for ${escapeHtml(score.label.toLowerCase())}`
     : "Not ranked on this measure";
@@ -1953,8 +2029,10 @@ function describe(p: Record<string, any>, classField: string, score: Score,
 // `lead` sets the first line in bold, for the one sentence a section is for.
 type Section = { heading: string; rows?: [string, string][]; lines?: string[]; lead?: boolean };
 
-const swatch = (color: string) =>
-  `<span style="display:inline-block;width:20px;height:4px;background:${color};`
+// in the color the road is drawn in on this basemap
+// (data-qgis keeps the QGIS color, so recolorSwatches can follow a basemap switch)
+const swatch = (color: string, basemap: BasemapKey) =>
+  `<span data-qgis="${escapeHtml(color)}" style="display:inline-block;width:20px;height:4px;background:${roadColor(color, basemap)};`
   + `vertical-align:middle;margin-right:7px;border-radius:2px"></span>`;
 
 const isTrue = (v: unknown) => v === true || v === 1 || v === "true" || v === "1";
@@ -1986,7 +2064,7 @@ function screenDistance(m: Map, pt: maplibregl.Point, f: maplibregl.MapGeoJSONFe
 // farther out cut back, or the reverse. A road cut off completely, or a piece
 // inside the hazard, says that first.
 function describeIsolation(p: Record<string, any>, classField: string, score: Score,
-                           hazard: Hazard): string {
+                           hazard: Hazard, basemap: BasemapKey): string {
   const w = HAZARD_WORDS[hazard.kind];
   const cls = Number(p[classField]);
   const style = STYLES[classField]?.classes.find((c) => c.value === cls);
@@ -2008,7 +2086,7 @@ function describeIsolation(p: Record<string, any>, classField: string, score: Sc
   const longest = ISOLATION_CUTOFFS[ISOLATION_CUTOFFS.length - 1];
   if (!blocked && !isolated && p[`bld_${longest}m_baseline`] != null
       && Number(p[`bld_${longest}m_baseline`]) === 0) {
-    return renderPopup(primary, type, `${style ? swatch(style.color) : ""}Not part of this measure`, [{
+    return renderPopup(primary, type, `${style ? swatch(style.color, basemap) : ""}Not part of this measure`, [{
       heading: "Not joined to the road network",
       lines: [
         `This road reaches no buildings in the data, even before ${w.event}.`,
@@ -2020,19 +2098,19 @@ function describeIsolation(p: Record<string, any>, classField: string, score: Sc
 
   let rank: string;
   if (blocked) {
-    rank = `${swatch(STYLES[classField]?.classes.find((c) => c.value === CUT_OFF_CLASS)?.color ?? "rgb(165, 15, 21)")}`
+    rank = `${swatch(STYLES[classField]?.classes.find((c) => c.value === CUT_OFF_CLASS)?.color ?? "rgb(165, 15, 21)", basemap)}`
       + `<b>Closed</b>, ${escapeHtml(w.inside)}`;
   } else if (isolated) {
-    rank = `${swatch(style?.color ?? "rgb(165, 15, 21)")}<b>Cut off completely</b>`;
+    rank = `${swatch(style?.color ?? "rgb(165, 15, 21)", basemap)}<b>Cut off completely</b>`;
   } else if (!(loss > 0)) {
-    rank = `${style ? swatch(style.color) : ""}No loss within ${minutes} minutes`;
+    rank = `${style ? swatch(style.color, basemap) : ""}No loss within ${minutes} minutes`;
   } else if (losing < MIN_RANKED) {
     // Too few roads lose anything at this drive time for ten ranks to mean
     // anything, so no rank is claimed.
-    rank = `${style ? swatch(style.color) : ""}Not ranked: only ${humanNumber(losing)} `
+    rank = `${style ? swatch(style.color, basemap) : ""}Not ranked: only ${humanNumber(losing)} `
       + `${losing === 1 ? "road loses" : "roads lose"} anything within ${minutes} minutes`;
   } else if (style) {
-    rank = `${swatch(style.color)}Ranked <b>${cls} of 10</b>`
+    rank = `${swatch(style.color, basemap)}Ranked <b>${cls} of 10</b>`
       + `${cls === 10 ? " (highest)" : cls === 1 ? " (lowest)" : ""}`
       + ` for ${escapeHtml(score.label.toLowerCase())}`;
   } else {

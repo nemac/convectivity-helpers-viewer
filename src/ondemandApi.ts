@@ -5,7 +5,7 @@
 // they are, the access code, the saved areas, and the measurements the
 // drawing makes before anything is sent.
 import { useSyncExternalStore } from "react";
-import type { Bounds, Hazard } from "./config";
+import { isLightBasemap, type BasemapKey, type Bounds, type Hazard } from "./config";
 
 // ------------------------------------------------------------ where they are --
 
@@ -52,30 +52,45 @@ if (TARGET_SWITCHABLE) {
 // checked yet).
 let localUp: boolean | null = null;
 
-// The target in use: never the local copy while it is not answering; else
-// the reader's choice; else the local copy when it answers; else, before the
-// first check, whatever the dev server was started with.
+// The target in use on the dev server: the copy on this computer unless the
+// reader chose AWS (live) on the switch. The user asked (2026-11-20) that dev
+// always runs the work on the local copy: it never falls back to AWS by
+// itself, even when the local copy is not answering. Then the work fails with
+// a plain note that the local copy is not running, rather than quietly using
+// AWS and its real limits.
+const startTarget = (): ApiTarget => "local";
 function currentTarget(): ApiTarget {
   if (!TARGET_SWITCHABLE) return isLocalUrl(BUILT.fi) ? "local" : "aws";
-  if (localUp === false) return "aws";
-  if (targetPref) return targetPref;
-  if (localUp === true) return "local";
-  return isLocalUrl(ENV_FI) ? "local" : "aws";
+  return targetPref ?? "local";
 }
 export function fiApi(): string {
   return TARGET_SWITCHABLE ? (currentTarget() === "local" ? LOCAL_BASES.fi : AWS_BASES.fi) : BUILT.fi;
 }
+// The target in use now: "local" or "aws".
+export const targetNow = (): ApiTarget => currentTarget();
 export function routesApi(): string {
   return TARGET_SWITCHABLE ? (currentTarget() === "local" ? LOCAL_BASES.routes : AWS_BASES.routes) : BUILT.routes;
 }
+// What the switch was set to, for feedback (src/feedback/feedbackApi.ts),
+// which has its own server on this computer (feedback_api/local_server.py on
+// 127.0.0.1:8788) and so must not be sent to AWS just because the Docker
+// tools on 8787 are not answering. Before the switch is first touched it is
+// whatever the two tools use, except that the tools falling back to AWS
+// because 8787 is down does not count: then it is what the dev server was
+// started with (local under npm run dev:local). Only meaningful when
+// TARGET_SWITCHABLE.
+export function chosenTarget(): ApiTarget {
+  return targetPref ?? startTarget();
+}
 
-interface TargetSnap { target: ApiTarget; localUp: boolean | null }
-let snap: TargetSnap = { target: currentTarget(), localUp };
+interface TargetSnap { target: ApiTarget; localUp: boolean | null; chosen: ApiTarget }
+let snap: TargetSnap = { target: currentTarget(), localUp, chosen: chosenTarget() };
 const listeners = new Set<() => void>();
 function emit() {
   const target = currentTarget();
-  if (target === snap.target && localUp === snap.localUp) return;
-  snap = { target, localUp };
+  const chosen = chosenTarget();
+  if (target === snap.target && localUp === snap.localUp && chosen === snap.chosen) return;
+  snap = { target, localUp, chosen };
   listeners.forEach((l) => l());
 }
 export function setApiTarget(t: ApiTarget) {
@@ -165,8 +180,10 @@ export function forgetCode(tool: Tool = "fi") {
 
 // ------------------------------------------------------------ the requests --
 
+// `server` is true when the message is the server's own words (its JSON
+// `error`), not one of the fallbacks below.
 export class ApiError extends Error {
-  constructor(public status: number, message: string) { super(message); }
+  constructor(public status: number, message: string, public server = false) { super(message); }
 }
 
 // Plain sentences for when the server cannot be reached or says nothing.
@@ -199,6 +216,20 @@ async function sha256Hex(text: string): Promise<string | null> {
   } catch { return null; }
 }
 
+// On the dev server, the copy on this computer not answering (Docker or
+// npm run dev:local not running) gets the same words as the Draw a hazard
+// card, not "Check the connection". The proxy's 502 carries no CORS header,
+// so the browser reports it as a failed fetch. The failure also marks the
+// local copy as down at once, so the card's note shows without waiting for
+// the next 30 second check.
+const LOCAL_DOWN = "The copy on this computer is not running, so this tool cannot run. Start Docker, then restart npm run dev:local.";
+const downHere = (base: string) => import.meta.env.DEV && isLocalUrl(base);
+function unreached(base: string): string {
+  if (!downHere(base)) return FALLBACK[0];
+  if (TARGET_SWITCHABLE) { localUp = false; emit(); }
+  return LOCAL_DOWN;
+}
+
 export async function api<T>(base: string, path: string, body?: unknown): Promise<T> {
   let res: Response;
   try {
@@ -224,15 +255,17 @@ export async function api<T>(base: string, path: string, body?: unknown): Promis
       res = await fetch(`${base}${path}`, init);
     }
   } catch {
-    throw new ApiError(0, FALLBACK[0]);
+    throw new ApiError(0, unreached(base));
   }
   let data: any = null;
   try { data = await res.json(); } catch { /* no body */ }
+  // The local proxy answers 502 when Docker's emulators are not running.
+  if (res.status === 502 && downHere(base)) throw new ApiError(0, unreached(base));
   if (!res.ok) {
-    throw new ApiError(res.status, typeof data?.error === "string" && data.error
-      ? data.error
-      : (path.startsWith("/routes") ? ROUTES_FALLBACK[res.status] : undefined)
-        ?? FALLBACK[res.status] ?? "Something went wrong. Please try again.");
+    const own = typeof data?.error === "string" && data.error ? data.error as string : null;
+    throw new ApiError(res.status, own
+      ?? (path.startsWith("/routes") ? ROUTES_FALLBACK[res.status] : undefined)
+      ?? FALLBACK[res.status] ?? "Something went wrong. Please try again.", own !== null);
   }
   if (data == null) throw new ApiError(0, "The tool's answer could not be read. Please try again.");
   return data as T;
@@ -468,10 +501,19 @@ export interface SharedRoutes extends RouteResult {
 
 // The three route colors on the map and beside each route in the popup:
 // sky blue, green and violet, none of them orange or red, each light enough
-// to read on the dark gray basemap and drawn over a white casing so they read
-// on the light one. The number on each marker is in the matching dark ink.
+// to read on the dark gray basemap and on aerial photos, and drawn over a
+// white casing. The number on each marker is in the matching dark ink.
 export const ROUTE_COLORS = ["#4cc3ff", "#3fd17a", "#d58cff"];
 export const ROUTE_INKS = ["#00253d", "#00321a", "#3b0042"];
+// On the light basemaps the pale route colors measure 1.6 to 2.3:1 against the
+// ground. These darker ones are the same blue, green and violet, at about 4:1
+// on both light grounds and 4.9:1 on white. Dark numbers cannot reach 4.5:1 on
+// chips this dark, so their numbers are white. No orange or red, as the user ruled out.
+export const ROUTE_COLORS_LIGHT = ["#0078ae", "#00823a", "#8c51d9"];
+export const ROUTE_INKS_LIGHT = ["#ffffff", "#ffffff", "#ffffff"];
+export const routePalette = (b: BasemapKey) => isLightBasemap(b)
+  ? { colors: ROUTE_COLORS_LIGHT, inks: ROUTE_INKS_LIGHT }
+  : { colors: ROUTE_COLORS, inks: ROUTE_INKS };
 
 // The distance at the end of a step ("Turn left onto Main Street, 0.6 mi"),
 // in miles, or null when the step gives none.
@@ -524,6 +566,8 @@ export interface SavedRoute {
   route_id?: string;
   // opened from someone's shared link and not (yet) in this browser's list
   shared?: boolean;
+  // opened by Rebuild in the feedback inbox (dev only), from a tester's report
+  rebuilt?: boolean;
 }
 export const ROUTE_KEEP_DAYS = 7;
 const ROUTES_KEY = "ondemandRoutes";

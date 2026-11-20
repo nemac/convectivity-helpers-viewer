@@ -1,0 +1,489 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  The feedback Lambda function: takes tester feedback for nemac.org pages
+  (the road network connectivity viewer first) and keeps it in its own S3
+  bucket. One small Python function behind a Function URL that only
+  CloudFront may call, at its own nemac.org subdomain, with a CloudFront
+  Function that refuses every page outside nemac.org and the local dev
+  server, a per-address rate limit, and a DynamoDB table for the daily caps
+  and the wrong-code lockout. It only accepts feedback; nothing on AWS reads
+  it back. Feedback is temporary: it ends on EndsOn, and deleting the stack
+  keeps the bucket.
+
+# Deployed by feedback_api/deploy.sh, which reads the certificate and the
+# hosted zone from the road-network-connectivity stack, passes the salted
+# hash of the testers' code, and then puts the real code into the function
+# (the template holds only a placeholder, so no code bucket is needed).
+# Region us-east-1 (CloudFront certificates and CloudFront's WAF live there).
+# No account identifier is written here, since the repository is public.
+
+Parameters:
+  DomainName:
+    Type: String
+    Default: feedbackconnectivityviewer.nemac.org
+  AllowedDomain:
+    Type: String
+    Default: nemac.org
+    AllowedPattern: "^[a-z0-9.-]+$"
+    Description: >
+      Pages at https://<this> and https://<anything>.<this> may send
+      feedback. Every other page is refused, at CloudFront and again in the
+      function.
+  LocalOrigins:
+    Type: String
+    Default: http://localhost:5190,http://127.0.0.1:5190
+    AllowedPattern: "^[a-z0-9:/.,-]+$"
+    Description: >
+      Dev servers that may send feedback too (comma separated, exact), or
+      "none". Any program can claim an origin, so the testers' code and the
+      caps are what really guard the function.
+  BucketName:
+    Type: String
+    Default: nemac-road-network-feedback
+    Description: Holds feedback/<id>.json and feedback/<id>.jpg, kept until removed.
+  HostedZoneId:
+    Type: AWS::Route53::HostedZone::Id
+    Description: The nemac.org hosted zone.
+  CertificateArn:
+    Type: String
+    Description: An issued ACM certificate in us-east-1 covering DomainName (the *.nemac.org one).
+  CodeSalt:
+    Type: String
+    NoEcho: true
+  CodeHashFeedback:
+    Type: String
+    NoEcho: true
+    Description: SHA-256 of the salt followed by the testers' feedback code.
+  FeedbackPerDay:
+    Type: Number
+    Default: 200
+    Description: Items one address (an IPv6 one by its /64) may send in a day (US Eastern).
+  FeedbackAllPerDay:
+    Type: Number
+    Default: 1000
+    Description: Items everyone together may send in a day.
+  FeedbackMbPerDay:
+    Type: Number
+    Default: 100
+    Description: Megabytes (screenshots included) everyone together may send in a day.
+  WrongCodesPerWindow:
+    Type: Number
+    Default: 10
+    Description: Wrong codes one address may send in 10 minutes before it is refused for the rest of them.
+  WrongCodesAllPerWindow:
+    Type: Number
+    Default: 100
+    Description: >
+      Wrong codes everyone together may send in 10 minutes. Past it every
+      code check is refused until the 10 minutes are up, so guessing from
+      many addresses at once gets no further than from one.
+  EndsOn:
+    Type: String
+    Default: ""
+    AllowedPattern: "^(20[0-9]{2}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01]))?$"
+    Description: >
+      The last day feedback is taken (YYYY-MM-DD, US Eastern). After it POST
+      answers 410 with a thank-you and GET /health reports ended. deploy.sh
+      sets it to 60 days after the first deploy unless --until says
+      otherwise, and later deploys keep it.
+  ServiceOn:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: '"false" turns feedback off: POST /feedback answers 503.'
+  Concurrency:
+    Type: Number
+    Default: 5
+    Description: Calls of the function at once. Each takes well under a second.
+  RateLimitOn:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: >
+      "true" puts a per-address rate limit (AWS WAF) in front. It costs
+      about $7 a month ($5 for the web ACL, $1 for each of its two rules)
+      plus $0.60 per million requests.
+  RequestsPer5Min:
+    Type: Number
+    Default: 300
+    Description: Requests one address may send in 5 minutes.
+  PostsPer5Min:
+    Type: Number
+    Default: 60
+    Description: Feedback items (POST) one address may send in 5 minutes.
+  LogRetentionDays:
+    Type: Number
+    Default: 30
+
+Conditions:
+  RateLimited: !Equals [!Ref RateLimitOn, "true"]
+  HasEnd: !Not [!Equals [!Ref EndsOn, ""]]
+
+Resources:
+  # ------------------------------------------------------------ storage
+  # Kept when the stack is deleted (deploy.sh --remove), and kept if a
+  # change ever made CloudFormation replace it, since it holds what testers
+  # said; the local inbox still reads it afterwards. RetainExceptOnCreate
+  # rather than plain Retain only so that a first create that fails and
+  # rolls back takes its new, empty bucket with it: a leftover bucket with
+  # the same name would stop the next try. No lifecycle rule: feedback is
+  # kept until removed by hand.
+  FeedbackBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: RetainExceptOnCreate
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Ref BucketName
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  # Plain HTTP to the bucket is refused, whoever asks. Kept with the bucket
+  # when the stack is deleted, so the bucket that outlives it keeps the rule.
+  FeedbackBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    DeletionPolicy: RetainExceptOnCreate
+    UpdateReplacePolicy: Retain
+    Properties:
+      Bucket: !Ref FeedbackBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: HttpsOnly
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource:
+              - !GetAtt FeedbackBucket.Arn
+              - !Sub "${FeedbackBucket.Arn}/*"
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+
+  CounterTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-counters"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+
+  # ------------------------------------------------------------ the function
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${AWS::StackName}"
+      RetentionInDays: !Ref LogRetentionDays
+
+  # It may only add objects under feedback/: no reading, listing or
+  # deleting, so even someone who took over the function could not read
+  # what testers sent.
+  Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: lambda.amazonaws.com}
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: feedback
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: Logs
+                Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !Sub "${LogGroup.Arn}:*"
+              - Sid: AddFeedback
+                Effect: Allow
+                Action: s3:PutObject
+                Resource: !Sub "${FeedbackBucket.Arn}/feedback/*"
+              - Sid: Counters
+                Effect: Allow
+                Action: [dynamodb:GetItem, dynamodb:UpdateItem]
+                Resource: !GetAtt CounterTable.Arn
+
+  # The code here is a placeholder that answers 503; deploy.sh replaces it
+  # with the zip it builds (update-function-code), every deploy. Because
+  # this text never changes, a stack update never puts the placeholder back.
+  Function:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Ref AWS::StackName
+      Description: The feedback Lambda function (takes tester feedback; reads nothing back)
+      Runtime: python3.12
+      Handler: index.handler
+      Architectures: [arm64]
+      MemorySize: 256
+      Timeout: 10
+      ReservedConcurrentExecutions: !Ref Concurrency
+      Role: !GetAtt Role.Arn
+      LoggingConfig:
+        LogGroup: !Ref LogGroup
+      Environment:
+        Variables:
+          FEEDBACK_BUCKET: !Ref FeedbackBucket
+          COUNTER_TABLE: !Ref CounterTable
+          CODE_SALT: !Ref CodeSalt
+          CODE_HASH_FEEDBACK: !Ref CodeHashFeedback
+          ALLOWED_DOMAIN: !Ref AllowedDomain
+          ALLOWED_LOCAL_ORIGINS: !Ref LocalOrigins
+          FEEDBACK_PER_DAY: !Ref FeedbackPerDay
+          FEEDBACK_ALL_PER_DAY: !Ref FeedbackAllPerDay
+          FEEDBACK_MB_PER_DAY: !Ref FeedbackMbPerDay
+          WRONG_CODES_PER_WINDOW: !Ref WrongCodesPerWindow
+          WRONG_CODES_ALL_PER_WINDOW: !Ref WrongCodesAllPerWindow
+          FEEDBACK_ENDS_ON: !Ref EndsOn
+          SERVICE_ON: !Ref ServiceOn
+      Code:
+        ZipFile: |
+          import json
+          def handler(event, context):
+              return {"statusCode": 503, "headers": {"Content-Type": "application/json"},
+                      "body": json.dumps({"error": "Feedback is being set up. Try again in a few minutes."})}
+
+  # Only CloudFront may call it: the URL needs a signed request, and
+  # CloudFront signs through the origin access control below.
+  FunctionUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      TargetFunctionArn: !GetAtt Function.Arn
+      AuthType: AWS_IAM
+
+  UrlPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref Function
+      Action: lambda:InvokeFunctionUrl
+      Principal: cloudfront.amazonaws.com
+      SourceArn: !Sub "arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${Distribution}"
+      FunctionUrlAuthType: AWS_IAM
+
+  UrlInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref Function
+      Action: lambda:InvokeFunction
+      Principal: cloudfront.amazonaws.com
+      SourceArn: !Sub "arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${Distribution}"
+      InvokedViaFunctionUrl: true
+
+  # ------------------------------------------------------------ who may call
+  # The user's rule (2026-11-20): only pages on nemac.org (https, the domain
+  # itself or any subdomain) and the local dev server; every other source is
+  # refused. This runs at CloudFront before the request goes anywhere, so a
+  # refused page costs no Lambda call; the function checks the same rule
+  # again (feedback_core.origin_kind), in case this is ever bypassed or
+  # changed. A request with no Origin header is refused too. The check is on
+  # the whole origin, so https://evil-nemac.org, https://nemac.org.evil.com
+  # and http://x.nemac.org are all refused.
+  OriginGate:
+    Type: AWS::CloudFront::Function
+    Properties:
+      Name: !Sub "${AWS::StackName}-origin-gate"
+      AutoPublish: true
+      FunctionConfig:
+        Comment: Refuses every Origin outside nemac.org and the local dev server
+        Runtime: cloudfront-js-2.0
+      FunctionCode: !Sub |
+        var DOMAIN = "${AllowedDomain}";
+        var LOCAL = "${LocalOrigins}" === "none" ? [] : "${LocalOrigins}".split(",");
+        var LABEL = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
+        function allowed(o) {
+          if (LOCAL.indexOf(o) >= 0) return true;
+          if (o.indexOf("https://") !== 0) return false;
+          var host = o.slice(8);
+          if (host === DOMAIN) return true;
+          var tail = "." + DOMAIN;
+          if (host.length <= tail.length || host.slice(-tail.length) !== tail) return false;
+          var labels = host.slice(0, -tail.length).split(".");
+          for (var i = 0; i < labels.length; i++) {
+            if (!LABEL.test(labels[i])) return false;
+          }
+          return true;
+        }
+        function handler(event) {
+          var h = event.request.headers.origin;
+          var o = h && h.value ? h.value.toLowerCase() : "";
+          if (o && o.length <= 300 && allowed(o)) return event.request;
+          return {statusCode: 403, statusDescription: "Forbidden",
+                  headers: {"cache-control": {value: "no-store"}}};
+        }
+
+  # ------------------------------------------------------------ rate limit
+  # Over a limit, CloudFront answers 403 itself and the function is never
+  # called. WAF counts each IPv6 address on its own, so one /64 can spread
+  # requests over many; the function's own daily caps key IPv6 on the /64,
+  # and there is a cap for everyone together.
+  RateLimit:
+    Type: AWS::WAFv2::WebACL
+    Condition: RateLimited
+    Properties:
+      Name: !Sub "${AWS::StackName}-rate-limit"
+      Scope: CLOUDFRONT
+      DefaultAction: {Allow: {}}
+      VisibilityConfig:
+        SampledRequestsEnabled: true
+        CloudWatchMetricsEnabled: true
+        MetricName: !Sub "${AWS::StackName}-rate-limit"
+      Rules:
+        - Name: posts-per-address
+          Priority: 0
+          Action: {Block: {}}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: posts-per-address
+          Statement:
+            RateBasedStatement:
+              Limit: !Ref PostsPer5Min
+              EvaluationWindowSec: 300
+              AggregateKeyType: IP
+              ScopeDownStatement:
+                ByteMatchStatement:
+                  FieldToMatch: {Method: {}}
+                  PositionalConstraint: EXACTLY
+                  SearchString: POST
+                  TextTransformations: [{Priority: 0, Type: NONE}]
+        - Name: requests-per-address
+          Priority: 1
+          Action: {Block: {}}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: requests-per-address
+          Statement:
+            RateBasedStatement:
+              Limit: !Ref RequestsPer5Min
+              EvaluationWindowSec: 300
+              AggregateKeyType: IP
+
+  # ------------------------------------------------------------ CloudFront and DNS
+  # Nothing is cached; the headers the function reads and the body reach it,
+  # but not Host, which must be the Function URL's own. CloudFront signs
+  # each request to the Function URL (origin access control), so the URL
+  # answers nobody else. A POST must therefore carry x-amz-content-sha256,
+  # its body's SHA-256 in hex, which the viewer adds. The function sets the
+  # CORS headers itself.
+  #
+  # The headers are named one by one, rather than with the managed
+  # AllViewerExceptHostHeader policy, so that CloudFront-Viewer-Address is
+  # certain to be among them: it is the sender's address as CloudFront saw
+  # the connection, and the per-address caps and the lockout key on it
+  # (feedback_core.Request.client_ip). CloudFront sets that header itself,
+  # so a sender cannot choose it. X-Forwarded-For is added by CloudFront in
+  # any case and is the fallback.
+  OriginHeaders:
+    Type: AWS::CloudFront::OriginRequestPolicy
+    Properties:
+      OriginRequestPolicyConfig:
+        Name: !Sub "${AWS::StackName}-headers"
+        Comment: What the feedback Lambda function reads, including the sender's address
+        HeadersConfig:
+          HeaderBehavior: whitelist
+          Headers:
+            - Origin
+            - Content-Type
+            # x-amz-content-sha256 is not listed: CloudFront refuses it in a
+            # policy ("not allowed", first deploy 2026-11-20) because it
+            # always passes that header on for the origin access control.
+            - Access-Control-Request-Method
+            - Access-Control-Request-Headers
+            - CloudFront-Viewer-Address
+        CookiesConfig:
+          CookieBehavior: none
+        QueryStringsConfig:
+          QueryStringBehavior: none
+
+  OriginAccess:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Ref AWS::StackName
+        Description: CloudFront signs requests to the feedback Lambda function's URL
+        OriginAccessControlOriginType: lambda
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Ref DomainName
+        Aliases: [!Ref DomainName]
+        HttpVersion: http2and3
+        IPV6Enabled: true
+        PriceClass: PriceClass_100
+        WebACLId: !If [RateLimited, !GetAtt RateLimit.Arn, !Ref AWS::NoValue]
+        Origins:
+          - Id: feedback-function-url
+            DomainName: !Select [2, !Split ["/", !GetAtt FunctionUrl.FunctionUrl]]
+            OriginAccessControlId: !GetAtt OriginAccess.Id
+            CustomOriginConfig:
+              OriginProtocolPolicy: https-only
+              OriginSSLProtocols: [TLSv1.2]
+              OriginReadTimeout: 30
+        DefaultCacheBehavior:
+          TargetOriginId: feedback-function-url
+          ViewerProtocolPolicy: https-only
+          AllowedMethods: [GET, HEAD, OPTIONS, PUT, PATCH, POST, DELETE]
+          CachedMethods: [GET, HEAD]
+          Compress: false
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt OriginGate.FunctionMetadata.FunctionARN
+          # AWS managed "CachingDisabled"
+          CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+          OriginRequestPolicyId: !Ref OriginHeaders
+        ViewerCertificate:
+          AcmCertificateArn: !Ref CertificateArn
+          SslSupportMethod: sni-only
+          MinimumProtocolVersion: TLSv1.2_2021
+
+  # The name's DNS records, made in the nemac.org hosted zone, so nobody has
+  # to add one by hand. Z2FDTNDATAQYW2 is CloudFront's own hosted zone, the
+  # same for every distribution.
+  DnsRecords:
+    Type: AWS::Route53::RecordSetGroup
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      RecordSets:
+        - Name: !Ref DomainName
+          Type: A
+          AliasTarget: {DNSName: !GetAtt Distribution.DomainName, HostedZoneId: Z2FDTNDATAQYW2}
+        - Name: !Ref DomainName
+          Type: AAAA
+          AliasTarget: {DNSName: !GetAtt Distribution.DomainName, HostedZoneId: Z2FDTNDATAQYW2}
+
+Outputs:
+  ApiUrl:
+    Value: !Sub "https://${DomainName}"
+  FunctionName:
+    Value: !Ref Function
+  BucketName:
+    Value: !Ref FeedbackBucket
+  CounterTableName:
+    Value: !Ref CounterTable
+  DistributionId:
+    Value: !Ref Distribution
+  EndsOn:
+    Value: !If [HasEnd, !Ref EndsOn, "no end date"]
