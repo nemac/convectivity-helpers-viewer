@@ -309,6 +309,9 @@ export const DEFAULT_TAB: TabId = "isolation";
 export const DEFAULT_COUNTY = "haywood";
 
 export const PINCH_TILES = "north_carolina_pinch.pmtiles";
+// Every road in the state, only its class, drawn gray under the functional
+// isolation roads (npm run tiles roads).
+export const ALL_ROADS_TILES = "north_carolina_roads.pmtiles";
 
 // Where the .pmtiles files are read from.
 //

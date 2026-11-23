@@ -6,7 +6,7 @@ import {
   BASEMAPS, BUILDING_COLOR, BUILDING_OUTLINE, BasemapKey, Bounds, CUT_OFF_CLASS,
   HAZARD_BUILDING_COLORS, HazardBuildingStatus, HAZARD_WORDS, Hazard, ISOLATION_CUTOFFS,
   MIN_RANKED, PINCH_MAX_DETOUR_M, PINCH_NO_ALTERNATIVE_M, SERVICES_URL, SERVICE_INK, SERVICE_KINDS,
-  STYLES, Score, ServiceKind, humanMiles,
+  ALL_ROADS_TILES, STYLES, Score, ServiceKind, TILES_BASE, humanMiles,
   aboutShare, humanNumber, humanSeconds, milesInWords, percentileOf, rankSentence,
   recolorSwatches, roadColor, roadTypeLabel, splitNames,
 } from "./config";
@@ -405,6 +405,31 @@ function markerData(h: Hazard | null | undefined): GeoJSON.FeatureCollection {
   };
 }
 
+// Every road in the state (north_carolina_roads.pmtiles), under the
+// functional isolation roads: a thin dark gray line on a thin white edge,
+// kept narrow so it never competes with the ranks. Exported for the legend.
+export const ALL_ROADS_COLOR = "#5b6169";
+const ALL_ROADS_LAYERS: any[] = [
+  {
+    id: "all-roads-casing", type: "line", source: "all-roads", "source-layer": "roads",
+    layout: { "line-cap": "round", "line-join": "round" },
+    paint: {
+      // faint when zoomed out, where many edges side by side read as white
+      "line-color": "#ffffff",
+      "line-opacity": ["interpolate", ["linear"], ["zoom"], 8, 0.35, 11, 0.7, 14, 0.9],
+      "line-width": ["interpolate", ["linear"], ["zoom"], 8, 0.9, 12, 1.7, 16, 3.2],
+    },
+  },
+  {
+    id: "all-roads-line", type: "line", source: "all-roads", "source-layer": "roads",
+    layout: { "line-cap": "round", "line-join": "round" },
+    paint: {
+      "line-color": ALL_ROADS_COLOR,
+      "line-width": ["interpolate", ["linear"], ["zoom"], 8, 0.5, 12, 0.9, 16, 2],
+    },
+  },
+];
+
 // Darker on the dark basemap, where a light wash would read as a highlight.
 const maskColor = (basemap: BasemapKey) =>
   basemap === "darkgray" ? "rgba(0, 0, 0, 0.42)" : "rgba(20, 30, 45, 0.24)";
@@ -530,6 +555,9 @@ interface Props {
   // On the functional isolation tab, the hazard being shown: drawn over the
   // roads, named in the popups, and its study area left clear of the shade.
   hazard?: Hazard | null;
+  // Every road in the state, drawn thin and gray under the analysis
+  // (functional isolation only), so roads go on past the study area.
+  allRoads?: boolean;
   // Overture's buildings PMTiles, or null to hide them.
   buildingsUrl?: string | null;
   // The services to show as icons (Detours tab), or null for none.
@@ -624,7 +652,7 @@ const FULL_EXTENT_ICON = `<svg viewBox="0 0 24 24" width="19" height="19" fill="
 export default function MapView({
   tilesUrl, sourceLayer, classField, score, basemap, opacity, minClass, center, zoom, flyKey,
   countyKey, onEmptyChange, fullBounds, fullLabel, focus, onFocusFeature, onInteract,
-  guide, onGuideAway, onGuideClosed, hazard = null, buildingsUrl = null, services = null,
+  guide, onGuideAway, onGuideClosed, hazard = null, allRoads = false, buildingsUrl = null, services = null,
   hazardBuildings = ["cut_off", "in_hazard"], guideOnHazard = false, guideStep = -1,
   guideCard = null, run = null, drawing = false, onDraw, onDrawFinish, onDrawCancel, drawShape = null,
   routeBox, openRoutes = null, dimmed = false, note = null, noteRing = null,
@@ -1059,6 +1087,11 @@ export default function MapView({
       // Keeps the drawing buffer readable after each frame, so the canvas can
       // be captured. Without it a screenshot of the map comes back blank.
       preserveDrawingBuffer: true,
+      // Esri's terms ask for this wherever its services are used: the
+      // basemaps and the place search.
+      attributionControl: {
+        customAttribution: '<a href="https://www.esri.com" target="_blank" rel="noopener">Powered by Esri</a>',
+      },
     });
 
     // The hazard's hatching is made in code, and added the first time a layer
@@ -1429,6 +1462,38 @@ export default function MapView({
     else m.on("load", run);
     return () => { m.off("load", run); };
   }, [buildingsUrl]);
+
+  // The gray road network, on the functional isolation tab only. Added the
+  // first time that tab is shown, not in the first style, so a missing file
+  // (npm run dev before the tiles are published) can never hold up the map.
+  // Only roads outside the study area are drawn, so a rank hidden by the
+  // slider still disappears rather than turning gray.
+  const studyKey = hazard ? hazard.studyArea.length + ":" + hazard.studyArea[0]?.join(",") : "";
+  useEffect(() => {
+    const m = map.current;
+    if (!m) return;
+    const run = () => {
+      if (allRoads && !m.getSource("all-roads")) {
+        m.addSource("all-roads", {
+          type: "vector", url: `pmtiles://${new URL(ALL_ROADS_TILES, TILES_BASE).href}`,
+          attribution: "Roads: Overture Maps Foundation, © OpenStreetMap contributors (ODbL)",
+        } as any);
+        for (const l of ALL_ROADS_LAYERS) m.addLayer(l, "mask-fill");
+      }
+      const filter = hazard
+        ? ["!", ["within", { type: "Polygon", coordinates: [hazard.studyArea] }]]
+        : null;
+      for (const l of ALL_ROADS_LAYERS) {
+        if (!m.getLayer(l.id)) continue;
+        m.setLayoutProperty(l.id, "visibility", allRoads ? "visible" : "none");
+        m.setFilter(l.id, filter as any);
+      }
+    };
+    if (ready.current) run();
+    else m.on("load", run);
+    return () => { m.off("load", run); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allRoads, studyKey]);
 
   // The services on the Detours tab: loaded the first time they are shown,
   // then filtered to the kinds ticked in the panel. On top of everything, so
@@ -2389,6 +2454,7 @@ function ShapeNote({ map, ring, children }: {
       const legendEl = host.querySelector('[data-guide="legend"]');
       add(legendEl);
       add(host.querySelector('[aria-haspopup="menu"]'));          // the Basemap button
+      add(host.querySelector('[data-feedback-area="Search"]'));   // the place search
       add(host.querySelector(".maplibregl-ctrl-top-right"));
       add(host.querySelector('[aria-label="Start the guide"]'));
       host.querySelectorAll(".maplibregl-popup").forEach((p) => {

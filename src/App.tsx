@@ -3,7 +3,7 @@ import {
   Box, ButtonBase, Checkbox, Divider, Drawer, FormControl, Link, MenuItem, MenuList, Popover, Radio, RadioGroup,
   FormControlLabel, ListSubheader, Select, Slider, Stack, Tab, Tabs, Tooltip, Typography,
 } from "@mui/material";
-import MapView, { Focus, PENDING_RUN, RunFiles } from "./MapView";
+import MapView, { ALL_ROADS_COLOR, Focus, PENDING_RUN, RunFiles } from "./MapView";
 import {
   AreasCard, DRAW_BUTTON, DRAW_INK, DrawCard, DrawHint, MapBar, NameDialog, RemoveButton, RoutesBox, RoutesCard, ShareButton,
   ShareIconButton, ShareNote, areaLine, areaLink, useShareNote,
@@ -25,6 +25,7 @@ import LayersIcon from "@mui/icons-material/Layers";
 import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
 import KeyboardArrowUpIcon from "@mui/icons-material/KeyboardArrowUp";
 import MapBoundary from "./MapBoundary";
+import PlaceSearch from "./PlaceSearch";
 import { focusLater, mapCanvas } from "./focus";
 import Methodology from "./Methodology";
 // Imported before this file's own top-level code runs, which is what takes
@@ -1193,6 +1194,17 @@ export default function App() {
         <Typography variant="caption" color="text.secondary" sx={{ display: "block", lineHeight: 1.35, mt: 0.25 }}>
           Slide the handle up to hide the lower ranks.
         </Typography>
+        {/* The gray road network under the analysis (functional isolation
+            only). Always on, so no checkbox: the user asked for none. */}
+        {tab === "isolation" && (
+          <Stack direction="row" spacing={1} alignItems="center" sx={{ height: LEGEND_ROW, mt: 0.75 }}>
+            <Box aria-hidden="true" sx={{
+              width: 26, height: 4, flexShrink: 0, bgcolor: ALL_ROADS_COLOR,
+              boxShadow: "0 0 0 1px #fff, 0 0 0 2px #c9ced6", borderRadius: "1px",
+            }} />
+            <Typography variant="caption" sx={{ whiteSpace: "nowrap" }}>Other roads, not looked at</Typography>
+          </Stack>
+        )}
         {/* Buildings, under the ranks at the user's request, with a heading
             that links to Overture's page on its buildings data. Each row
             is a checkbox, a footprint swatch in the color the map draws,
@@ -1681,6 +1693,9 @@ export default function App() {
             buttons (top right). Both are placed absolutely, so the order
             does not move them on screen. */}
         <BasemapPicker value={basemap} onChange={setBasemap} />
+        {/* Find a place or an address, beside Basemap (and next after it
+            for the Tab key). */}
+        <PlaceSearch />
         {/* Folded while the guide talks about the road or other panel cards,
             so it never covers the hazard or the guide; open on the guide's
             steps about the legend and the services. */}
@@ -1710,6 +1725,7 @@ export default function App() {
             fullBounds={fullBounds}
             fullLabel={fullLabel}
             hazard={shown.hazard}
+            allRoads={tab === "isolation"}
             buildingsUrl={buildings && overtureRelease ? overtureBuildingsUrl(overtureRelease) : null}
             services={tab === "detour" ? services : null}
             hazardBuildings={hazardBldgs}
@@ -1832,6 +1848,10 @@ export default function App() {
                 ? `Results for "${hazard.label}" cover the roads within ${hazard.bufferMiles} miles of it.`
                 : `Each hazard covers the roads within ${hazard.bufferMiles} miles of it. This one `
                   + `is ${hazard.label.charAt(0).toLowerCase() + hazard.label.slice(1)}.`}
+              {/* the user's wording, 2026-11-23 */}
+              {ONDEMAND_LIVE
+                ? " Go to it or draw a hazard to see how it affects roads on the map."
+                : " Go to it to see how it affects roads on the map."}
             </Typography>
             {/* The user asked for a second way out of an empty view: draw a
                 hazard right here, with "or" between the two buttons. Only

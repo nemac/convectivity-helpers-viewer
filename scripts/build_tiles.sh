@@ -10,7 +10,7 @@
 # column in every source and nothing in the viewer reads it, so
 # carrying it would multiply the tile size for no gain.
 #
-# Usage:  bash scripts/build_tiles.sh [isolation|detours|pinch|all] [match]
+# Usage:  bash scripts/build_tiles.sh [isolation|detours|pinch|roads|all] [match]
 #
 # With isolation, an optional second word builds only the hazard runs whose
 # file name contains it, for example "haywood" or "pagescreek1".
@@ -153,6 +153,30 @@ if [ "$WHAT" = "all" ] || [ "$WHAT" = "pinch" ]; then
     # the scale this layer is for.
     tile "$SRC/north_carolina_pinch_points.gpkg" \
          "north_carolina_pinch" pinch "$PINCH_COLS" 5 13
+fi
+
+if [ "$WHAT" = "all" ] || [ "$WHAT" = "roads" ]; then
+    echo "Road network tiles:"
+    # Every road in the state, from the pinch run, drawn under the
+    # functional isolation roads so the map has roads past each study area.
+    # Only the road class is kept. Below z11 only the bigger roads are kept,
+    # and service roads (driveways, parking lots) only from z13, which keeps
+    # the statewide tiles small when zoomed out.
+    src="$SRC/north_carolina_pinch_points.gpkg"
+    if [ -f "$src" ]; then
+        echo "  $(basename "$src") -> north_carolina_roads.pmtiles"
+        ogr2ogr -f GeoJSONSeq "$TMP/all_roads.geojsonl" "$src" -t_srs EPSG:4326 -select "class"
+        tippecanoe -o "$DEST/north_carolina_roads.pmtiles" -l roads -n north_carolina_roads \
+            -Z6 -z13 \
+            -j '{"*":["any",[">=","$zoom",13],["all",[">=","$zoom",11],["!=","class","service"]],["in","class","motorway","trunk","primary","secondary","tertiary"]]}' \
+            --drop-densest-as-needed --extend-zooms-if-still-dropping \
+            --force --quiet --no-progress-indicator \
+            "$TMP/all_roads.geojsonl"
+        rm -f "$TMP/all_roads.geojsonl"
+        echo "    $(du -h "$DEST/north_carolina_roads.pmtiles" | cut -f1)"
+    else
+        echo "  SKIP $(basename "$src") (not found)"
+    fi
 fi
 
 echo ""
